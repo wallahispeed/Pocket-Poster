@@ -180,6 +180,61 @@ class SymHandler {
             }
         }
 
+        // ── Probe PB's actual directory structure ──────────────────────────────
+        // List Library/Application Support to find the real directory names PB uses.
+        // PRBPosterExtensionDataStore may have been renamed in iOS 26.5 WallpaperKit.
+        let pbLibAS = BadQuery.applicationContainerPath(appHash: appHash) + "/Library/Application Support"
+        if let libH = try? BadQuery.consume(path: pbLibAS, create: true) {
+            defer { libH.release() }
+            let tops = (try? fm.contentsOfDirectory(atPath: pbLibAS)) ?? []
+            diag.append("PB LibAS: \(tops.joined(separator: ","))")
+            for top in tops where !top.hasPrefix(".") {
+                let tp = "\(pbLibAS)/\(top)"
+                if let th = try? BadQuery.consume(path: tp, create: true) {
+                    defer { th.release() }
+                    let subs = (try? fm.contentsOfDirectory(atPath: tp)) ?? []
+                    diag.append("  \(top): \(subs.joined(separator: ","))")
+                    for sub in subs where !sub.hasPrefix(".") {
+                        let sp = "\(tp)/\(sub)"
+                        if let sh = try? BadQuery.consume(path: sp, create: true) {
+                            defer { sh.release() }
+                            let items = (try? fm.contentsOfDirectory(atPath: sp)) ?? []
+                            diag.append("    \(sub): \(items.joined(separator: ","))")
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Show what's inside our written descriptor folder ───────────────────
+        // Confirms files landed correctly and reveals the format we're writing.
+        let ourDescPath = BadQuery.descriptorsPath(appHash: appHash, ext: "com.apple.WallpaperKit.CollectionsPoster")
+        if let dH = try? BadQuery.consume(path: ourDescPath, create: true) {
+            defer { dH.release() }
+            let uuids = (try? fm.contentsOfDirectory(atPath: ourDescPath)) ?? []
+            diag.append("ourDesc[\(uuids.count)]: \(uuids.joined(separator: ","))")
+            if let firstUUID = uuids.first(where: { !$0.hasPrefix(".") }) {
+                let fp = "\(ourDescPath)/\(firstUUID)"
+                if let fH = try? BadQuery.consume(path: fp, create: true) {
+                    defer { fH.release() }
+                    let files = (try? fm.contentsOfDirectory(atPath: fp)) ?? []
+                    diag.append("  \(firstUUID): \(files.joined(separator: ","))")
+                    for f in files where !f.hasPrefix(".") {
+                        let filePath = "\(fp)/\(f)"
+                        if let data = fm.contents(atPath: filePath) {
+                            if let s = String(data: data, encoding: .utf8) {
+                                diag.append("    \(f): \(s.prefix(200))")
+                            } else {
+                                diag.append("    \(f): [binary \(data.count)b]")
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            diag.append("ourDesc: not accessible (path=\(ourDescPath))")
+        }
+
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
 
@@ -533,23 +588,6 @@ class SymHandler {
         try? fm.removeItem(atPath: tmpWALPath)
 
         if didSucceed {
-            // Open PosterBoard FIRST, before anything else.
-            // Descriptor folders are already written by this point (applyTendies calls
-            // writeDescriptorsViaBadQuery before writeToPosterBoardDB).
-            // PosterBoard's _loadCollections scans the descriptors directory on launch —
-            // opening it now gives it maximum time to complete that scan before respring.
-            if let wsCls = objc_getClass("LSApplicationWorkspace") as? NSObject.Type,
-               let ws = wsCls.perform(Selector(("defaultWorkspace")))?.takeUnretainedValue() as? NSObject {
-                let opened = ws.perform(Selector(("openApplicationWithBundleID:")), with: "com.apple.PosterBoard") != nil
-                diag.append("openPosterBoard (early): \(opened)")
-            }
-
-            // Sleep 15s while PB runs its launch sequence and _loadCollections.
-            // _loadCollections scans .../descriptors/ for custom wallpaper collections.
-            // 5s was not enough in the previous build — use 15s to be safe.
-            Thread.sleep(forTimeInterval: 15.0)
-            diag.append("slept 15s (PosterBoard _loadCollections window)")
-
             let center = CFNotificationCenterGetDarwinNotifyCenter()
 
             // ── Darwin notification guesses ───────────────────────────────────
@@ -695,6 +733,32 @@ class SymHandler {
                                 diag.append("WK \(className) called \(reloadSel)")
                             }
                         }
+                        // After reload: check how many collections this manager found in OUR process.
+                        // =0 means descriptor format/path is wrong for iOS 26.5.
+                        // >0 means format is valid (PB's separate process may still differ).
+                        if inst.responds(to: Selector("numberOfWallpaperCollections")),
+                           let colMethod = class_getInstanceMethod(type(of: inst),
+                               Selector("numberOfWallpaperCollections")) {
+                            typealias IntGetter = @convention(c) (AnyObject, Selector) -> Int
+                            let count = unsafeBitCast(method_getImplementation(colMethod),
+                                to: IntGetter.self)(inst, Selector("numberOfWallpaperCollections"))
+                            diag.append("WK \(className) numberOfWallpaperCollections=\(count)")
+                            if count > 0,
+                               let colAtIdxMethod = class_getInstanceMethod(type(of: inst),
+                                   Selector("wallpaperCollectionAtIndex:")) {
+                                typealias GetAtIdx = @convention(c) (AnyObject, Selector, Int) -> AnyObject?
+                                let getAtIdx = unsafeBitCast(method_getImplementation(colAtIdxMethod),
+                                    to: GetAtIdx.self)
+                                for i in 0..<min(count, 5) {
+                                    if let col = getAtIdx(inst,
+                                        Selector("wallpaperCollectionAtIndex:"), i) as? NSObject {
+                                        let nm = col.value(forKey: "displayName") as? String ?? "?"
+                                        let id = col.value(forKey: "wallpaperCollectionIdentifier") as? String ?? "?"
+                                        diag.append("  col[\(i)]: '\(nm)' id=\(id)")
+                                    }
+                                }
+                            }
+                        }
                         break
                     }
                 }
@@ -702,7 +766,6 @@ class SymHandler {
                 diag.append("WK objc_copyClassNamesForImage: returned nil")
             }
 
-            // (openPosterBoard moved to top of this block for maximum scan time)
         }
 
         diag.append("=== done didSucceed=\(didSucceed) ===")
