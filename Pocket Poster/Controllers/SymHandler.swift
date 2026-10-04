@@ -115,6 +115,22 @@ class SymHandler {
                         try fm.removeItem(at: destURL)
                     }
                     try fm.copyItem(at: descr, to: destURL)
+                    // Write Wallpaper.plist using the full UUID as identifier and the correct
+                    // family so WKWallpaperBundle.shouldLoadWallpaperBundleAtURL: accepts us.
+                    // identifier MUST match the folder name exactly (full UUID, not truncated).
+                    let wpMeta: [String: Any] = [
+                        "identifier": destName,
+                        "version": 1,
+                        "name": "Custom Wallpaper",
+                        "family": "com.apple.WallpaperKit.CollectionsPoster",
+                        "wantsDeviceMotion": false,
+                        "isOffloaded": false,
+                        "logicalScreenClass": 0
+                    ]
+                    if let wpData = try? PropertyListSerialization.data(
+                        fromPropertyList: wpMeta, format: .binary, options: 0) {
+                        try? wpData.write(to: destURL.appendingPathComponent("Wallpaper.plist"))
+                    }
                     lastError = nil
                     break
                 } catch {
@@ -443,6 +459,46 @@ class SymHandler {
         } else {
             diag.append("GalleryCache: no access for deletion")
         }
+
+        // ── _createWallpaperBundleInDirectory: diagnostic ───────────────────────
+        // Call Apple's own bundle-creation method in a tmp dir to discover the
+        // exact Wallpaper.plist keys that shouldLoadWallpaperBundleAtURL: requires.
+        let refBundleDir = NSTemporaryDirectory().appending("pp_refbundle_\(arc4random())")
+        try? fm.createDirectory(atPath: refBundleDir, withIntermediateDirectories: true, attributes: nil)
+        if let bCls = NSClassFromString("WKWallpaperBundle"),
+           let bMeta = object_getClass(bCls as AnyObject) {
+            let createSel = NSSelectorFromString("_createWallpaperBundleInDirectory:version:identifier:name:family:wantsDeviceMotion:isOffloaded:logicalScreenClass:thumbnailImageURL:adjustmentTraits:preferredProminentColors:preferredTitleColors:assetMapping:")
+            if let m = class_getInstanceMethod(bMeta, createSel) {
+                typealias CreateFn = @convention(c) (AnyObject, Selector, NSURL, Int, NSString, NSString, NSString, Bool, Bool, Int, AnyObject?, AnyObject?, AnyObject?, AnyObject?, AnyObject?) -> AnyObject?
+                let fn = unsafeBitCast(method_getImplementation(m), to: CreateFn.self)
+                _ = fn(bCls as AnyObject, createSel,
+                       URL(fileURLWithPath: refBundleDir) as NSURL,
+                       1, "pp-diag-ref" as NSString, "Diag WP" as NSString,
+                       "com.apple.WallpaperKit.CollectionsPoster" as NSString,
+                       false, false, 0, nil, nil, nil, nil, nil)
+                let refFiles = (try? fm.contentsOfDirectory(atPath: refBundleDir)) ?? []
+                diag.append("createBundle files: \(refFiles.joined(separator: ","))")
+                let wpPath = refBundleDir + "/Wallpaper.plist"
+                if let wpData = fm.contents(atPath: wpPath) {
+                    if let pl = try? PropertyListSerialization.propertyList(from: wpData, options: [], format: nil),
+                       let jsonData = try? JSONSerialization.data(withJSONObject: pl, options: .prettyPrinted),
+                       let jsonStr = String(data: jsonData, encoding: .utf8) {
+                        diag.append("refWP: \(jsonStr.prefix(1200))")
+                    } else if let s = String(data: wpData, encoding: .utf8) {
+                        diag.append("refWP(xml): \(s.prefix(1200))")
+                    } else {
+                        diag.append("refWP: \(wpData.count)b binary no-decode")
+                    }
+                } else {
+                    diag.append("createBundle: no Wallpaper.plist written")
+                }
+            } else {
+                diag.append("createBundle: selector not found on WKWallpaperBundle")
+            }
+        } else {
+            diag.append("createBundle: WKWallpaperBundle not found")
+        }
+        try? fm.removeItem(atPath: refBundleDir)
 
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)

@@ -293,6 +293,16 @@ class PosterBoardManager: ObservableObject {
             }
 
             if useBadQuery {
+                // Wipe stale UUID descriptor folders for this extension so they don't
+                // accumulate across Apply attempts and confuse PosterBoard's scanner.
+                let descPath = BadQuery.descriptorsPath(appHash: appHash, ext: ext)
+                if let wH = try? BadQuery.consume(path: descPath, create: true) {
+                    defer { wH.release() }
+                    let old = (try? FileManager.default.contentsOfDirectory(atPath: descPath)) ?? []
+                    for item in old where !item.hasPrefix(".") {
+                        try? FileManager.default.removeItem(atPath: descPath + "/" + item)
+                    }
+                }
                 // iOS 26/27: direct write via container_query sandbox extension
                 do {
                     let uuids = try SymHandler.writeDescriptorsViaBadQuery(appHash: appHash, ext: ext, descriptorFolders: foldersToWrite)
