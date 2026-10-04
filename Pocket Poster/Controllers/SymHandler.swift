@@ -301,15 +301,42 @@ class SymHandler {
             return (seq, sk)
         }
 
-        // ══════════════════════════════════════════════════════════════════════
-        // APPROACH DIRECT — delete PB's DB files using dir extension, then call
-        // sqlite3_open_v2(dbPath, CREATE) directly at PB's path.
-        // Hypothesis: POSIX O_CREAT on a non-existent path may work (while O_RDWR
-        // on an existing file fails with EISDIR in LiveContainer).  No copy needed.
-        // ══════════════════════════════════════════════════════════════════════
         var didSucceed = false
 
-        if let dirHandle = try? BadQuery.consume(path: dbDir, create: true) {
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH INPLACE — open existing DB with READWRITE, no delete/recreate.
+        // Preserves the file's inode, so any kqueue/dispatch_source watch that
+        // posterboardd holds on its DB file fires when we write to it.
+        // ══════════════════════════════════════════════════════════════════════
+        if !didSucceed, let ipDirH = try? BadQuery.consume(path: dbDir, create: true) {
+            defer { ipDirH.release() }
+            if fm.fileExists(atPath: dbPath) {
+                var ipDb: OpaquePointer?
+                let ipRC = sqlite3_open_v2(dbPath, &ipDb, SQLITE_OPEN_READWRITE, nil)
+                let ipErr = Darwin.errno
+                diag.append("[InPlace] open READWRITE: rc=\(ipRC) errno=\(ipErr)")
+                if ipRC == SQLITE_OK, let db = ipDb {
+                    sqlite3_busy_timeout(db, 2000)
+                    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                    var (seq, sk) = readMaxValues(db: db)
+                    diag.append("[InPlace] maxPosterId=\(seq) maxSortKey=\(sk)")
+                    let n = insertEntries(db: db, seq: &seq, maxSortKey: &sk, src: "InPlace")
+                    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                    sqlite3_close(db)
+                    if n > 0 { didSucceed = true; diag.append("[InPlace] SUCCESS") }
+                } else {
+                    if let db = ipDb { sqlite3_close(db) }
+                    diag.append("[InPlace] open failed — falling to Direct")
+                }
+            } else {
+                diag.append("[InPlace] DB absent — falling to Direct")
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH DIRECT — delete PB's DB and create fresh at same path.
+        // ══════════════════════════════════════════════════════════════════════
+        if !didSucceed, let dirHandle = try? BadQuery.consume(path: dbDir, create: true) {
             // Delete existing DB/WAL/SHM so dbPath does not exist
             try? fm.removeItem(atPath: walPath)
             try? fm.removeItem(atPath: shmPath)
@@ -355,7 +382,7 @@ class SymHandler {
         // APPROACH A — open copy WITHOUT WAL (WAL may put sqlite3 into recovery)
         // ══════════════════════════════════════════════════════════════════════
 
-        do {
+        if !didSucceed {
             try? fm.removeItem(atPath: tmpWALPath)      // skip WAL on first try
             var db: OpaquePointer?
             let rc = sqlite3_open_v2(tmpDBPath, &db, SQLITE_OPEN_READWRITE, nil)
@@ -505,30 +532,25 @@ class SymHandler {
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
 
-        // ── post Darwin notifications to trigger PB rescan ───────────────────
-        // Fire-and-forget; wrong names are a no-op. Right name = PB rescans
-        // and shows our wallpaper without waiting for the next respring.
         if didSucceed {
             let center = CFNotificationCenterGetDarwinNotifyCenter()
-            let candidates: [String] = [
-                "com.apple.springboard.posterboard.wallpapersDidChange",
-                "com.apple.UIPosterBoard.wallpapersChanged",
-                "com.apple.posterboard.newPosterAvailable",
-                "com.apple.posterboardd.posterDataChanged",
-                "PRBPosterExtensionDataStoreChanged",
-                "com.apple.posterboard.reload",
-            ]
-            for name in candidates {
+
+            // ── Darwin notification guesses ───────────────────────────────────
+            for name in ["com.apple.springboard.posterboard.wallpapersDidChange",
+                          "com.apple.UIPosterBoard.wallpapersChanged",
+                          "com.apple.posterboard.newPosterAvailable",
+                          "com.apple.posterboardd.posterDataChanged",
+                          "PRBPosterExtensionDataStoreChanged",
+                          "com.apple.posterboard.reload"] {
                 CFNotificationCenterPostNotification(center,
                     CFNotificationName(name as CFString), nil, nil, true)
             }
-            diag.append("posted \(candidates.count) Darwin notification candidates")
+            diag.append("posted 6 Darwin notification candidates")
 
-            // ── kill posterboardd so launchd restarts it with a fresh DB read ──
-            // posterboardd is a persistent daemon that survives respring — its
-            // in-memory cache stays stale even after we update the DB on disk.
-            // Killing it causes launchd to auto-restart it; on startup it reads
-            // the SQLite DB fresh and picks up our new entries.
+            // ── Kill posterboardd (SIGTERM, fallback SIGKILL) ─────────────────
+            // posterboardd survives respring. Killing it forces launchd to restart
+            // it fresh; on restart it reads the SQLite DB from disk and picks up
+            // our new rows. Same-UID processes are allowed kill() on most sandboxes.
             var pbdPid: pid_t = -1
             var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
             var procSize = 0
@@ -542,29 +564,94 @@ class SymHandler {
                 }
                 if pname.hasPrefix("posterboard") { pbdPid = p.kp_proc.p_pid; break }
             }
-            diag.append("posterboardd scan: pid=\(pbdPid)")
+            diag.append("posterboardd pid=\(pbdPid)")
             if pbdPid > 0 {
-                let kr = Darwin.kill(pbdPid, SIGTERM)
-                let ke = Darwin.errno
-                diag.append("kill(SIGTERM) rc=\(kr) errno=\(ke)")
-                if kr == 0 { Thread.sleep(forTimeInterval: 0.8) }
+                let kr1 = Darwin.kill(pbdPid, SIGTERM)
+                let ke1 = Darwin.errno
+                diag.append("SIGTERM: rc=\(kr1) errno=\(ke1)")
+                if kr1 != 0 {
+                    let kr2 = Darwin.kill(pbdPid, SIGKILL)
+                    let ke2 = Darwin.errno
+                    diag.append("SIGKILL: rc=\(kr2) errno=\(ke2)")
+                }
+                Thread.sleep(forTimeInterval: 1.0)
             }
 
-            // ── WallpaperKit probe: find reload API on PRBPosterExtensionDataStore ──
+            // ── Read posterboardd binary for exact notification/XPC names ─────
+            // bad_query file access may reach system paths. If it does, the binary's
+            // string table gives us the authoritative notification names posterboardd
+            // registers for — no more guessing.
+            for binPath in ["/usr/libexec/posterboardd", "/usr/sbin/posterboardd"] {
+                guard let bh = try? BadQuery.consume(path: binPath, create: true) else {
+                    diag.append("bin \(binPath): consume FAIL"); continue
+                }
+                defer { bh.release() }
+                guard let data = FileManager.default.contents(atPath: binPath) else {
+                    diag.append("bin \(binPath): read FAIL"); continue
+                }
+                diag.append("bin \(binPath): \(data.count) bytes")
+                var extracted: [String] = []
+                var cur: [UInt8] = []
+                cur.reserveCapacity(256)
+                for byte in data {
+                    if byte >= 32 && byte < 127 {
+                        cur.append(byte)
+                    } else {
+                        if cur.count >= 12, let s = String(bytes: cur, encoding: .ascii) {
+                            let l = s.lowercased()
+                            if l.contains("poster") || l.contains("prb") || l.contains("wallpaper") ||
+                               s.hasPrefix("com.apple.") || l.contains("notify") || l.contains("xpc") {
+                                extracted.append(s)
+                            }
+                        }
+                        cur.removeAll(keepingCapacity: true)
+                    }
+                }
+                diag.append("bin strings[\(extracted.count)]: \(extracted.prefix(300).joined(separator: "|"))")
+                var binNotifCount = 0
+                for s in extracted where s.count < 128 &&
+                    (s.hasPrefix("com.apple.") || s.hasPrefix("PRB")) {
+                    CFNotificationCenterPostNotification(center,
+                        CFNotificationName(s as CFString), nil, nil, true)
+                    binNotifCount += 1
+                }
+                diag.append("bin notifications posted: \(binNotifCount)")
+                break
+            }
+
+            // ── WallpaperKit full class and method enumeration ────────────────
+            // List ALL methods on relevant classes so we have every selector name.
+            // Also try every plausible reload selector on any shared instance found.
             dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
             for className in ["PRBPosterExtensionDataStore", "PRBPosterDataStoreController",
-                               "PRBCollectionsDataProvider", "PRBPosterDataManager"] {
+                               "PRBCollectionsDataProvider", "PRBPosterDataManager",
+                               "WKPosterDataStore", "WKCollectionsDataSource"] {
                 guard let cls = NSClassFromString(className) as? NSObject.Type else {
                     diag.append("WK \(className): absent"); continue
                 }
                 diag.append("WK found: \(className)")
-                for sharedSel in ["sharedDataStore", "sharedInstance", "defaultDataStore", "sharedManager"] {
+                var cnt: UInt32 = 0
+                if let ms = class_copyMethodList(object_getClass(cls), &cnt) {
+                    var names: [String] = []
+                    for i in 0..<Int(cnt) { names.append(NSStringFromSelector(method_getName(ms[i]))) }
+                    diag.append("WK \(className) +[\(names.joined(separator: ","))]")
+                }
+                cnt = 0
+                if let ms = class_copyMethodList(cls, &cnt) {
+                    var names: [String] = []
+                    for i in 0..<Int(cnt) { names.append(NSStringFromSelector(method_getName(ms[i]))) }
+                    diag.append("WK \(className) -[\(names.joined(separator: ","))]")
+                }
+                for sharedSel in ["sharedDataStore", "sharedInstance", "defaultDataStore",
+                                   "sharedManager", "defaultStore"] {
                     guard cls.responds(to: Selector(sharedSel)),
                           let inst = cls.perform(Selector(sharedSel))?.takeUnretainedValue() as? NSObject
                     else { continue }
                     diag.append("WK \(className) instance via \(sharedSel)")
                     for reloadSel in ["reload", "reloadData", "invalidateCache", "rebuildCollections",
-                                      "reloadFromStorage", "reloadFromDisk", "forceRefresh", "resetCaches"] {
+                                      "reloadFromStorage", "reloadFromDisk", "forceRefresh", "resetCaches",
+                                      "reloadPosterData", "refreshPosterData", "loadData", "fetchData",
+                                      "reloadExtensionData", "refreshExtensionData", "reloadAllData", "reset"] {
                         if inst.responds(to: Selector(reloadSel)) {
                             inst.perform(Selector(reloadSel))
                             diag.append("WK \(className) called \(reloadSel)")
@@ -572,6 +659,14 @@ class SymHandler {
                     }
                     break
                 }
+            }
+
+            // ── openPosterBoard as final trigger ──────────────────────────────
+            // Forces PosterBoard app to launch and refresh from posterboardd.
+            if let wsCls = objc_getClass("LSApplicationWorkspace") as? NSObject.Type,
+               let ws = wsCls.perform(Selector(("defaultWorkspace")))?.takeUnretainedValue() as? NSObject {
+                let opened = ws.perform(Selector(("openApplicationWithBundleID:")), with: "com.apple.PosterBoard") != nil
+                diag.append("openPosterBoard: \(opened)")
             }
         }
 
