@@ -147,7 +147,10 @@ class SymHandler {
         let shmPath = dbPath + "-shm"
         let dbDir   = (dbPath as NSString).deletingLastPathComponent
 
-        let tmpDBPath  = getLCDocumentsDirectory().appendingPathComponent("pp_pb_db.sqlite3").path
+        // Use the real process temp dir — guaranteed in our sandbox for raw POSIX I/O.
+        // LC_HOME_PATH/Documents works for Foundation APIs but SQLite's raw open()
+        // can be blocked there by the kernel sandbox in LiveContainer.
+        let tmpDBPath  = (NSTemporaryDirectory() as NSString).appendingPathComponent("pp_pb_db.sqlite3")
         let tmpWALPath = tmpDBPath + "-wal"
 
         var diag: [String] = ["appHash=\(appHash) entries=\(entries.count)"]
@@ -185,10 +188,19 @@ class SymHandler {
         }
         dbReadHandle.release()
 
+        // Force 0644 — the copy may inherit PosterBoard's read-only permissions,
+        // which would make sqlite3_open_v2 with READWRITE return SQLITE_CANTOPEN=14.
+        try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpDBPath)
+        if let attrs = try? fm.attributesOfItem(atPath: tmpDBPath),
+           let perms = attrs[.posixPermissions] as? Int {
+            diag.append("DB perms after chmod: \(String(perms, radix: 8))")
+        }
+
         // Also copy WAL so our SQLite session sees committed-but-uncheckpointed data.
         let walReadHandle = try? BadQuery.consume(path: walPath, create: true)
         if fm.fileExists(atPath: walPath) {
             try? fm.copyItem(atPath: walPath, toPath: tmpWALPath)
+            try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpWALPath)
             diag.append("WAL copied: \(fm.fileExists(atPath: tmpWALPath))")
         } else {
             diag.append("no WAL present")
@@ -199,6 +211,12 @@ class SymHandler {
         var db: OpaquePointer?
         let openRC = sqlite3_open_v2(tmpDBPath, &db, SQLITE_OPEN_READWRITE, nil)
         diag.append("open copy rc=\(openRC)")
+        if openRC != SQLITE_OK, let db = db {
+            diag.append("errmsg=\(String(cString: sqlite3_errmsg(db)))")
+            diag.append("extended_rc=\(sqlite3_extended_errcode(db))")
+            sqlite3_close(db)
+            return
+        }
         guard openRC == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
 
