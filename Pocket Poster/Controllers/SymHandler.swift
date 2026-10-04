@@ -130,15 +130,14 @@ class SymHandler {
     /// Register wallpaper descriptors in PosterBoard's SQLite database so they
     /// appear in the collections picker immediately after the first respring.
     ///
-    /// Strategy: the file-level bad_query extension grants read-only access to
-    /// existing files (sqlite3_open with READWRITE → SQLITE_CANTOPEN=14). So we:
-    ///   1. Copy PosterBoard's DB (and WAL) into our own container using the
-    ///      read-only file extension — no sandbox restriction on reading.
-    ///   2. Open our copy with full read-write access and insert our rows.
-    ///   3. Checkpoint our copy so all changes land in the main DB file.
-    ///   4. Use a directory extension (which DOES grant write/create) to replace
-    ///      PosterBoard's main DB, WAL, and SHM with our modified copy.
-    /// This mirrors how Nugget modifies the DB on PC, done on-device instead.
+    /// Tries four approaches in order until one succeeds:
+    ///   A. Copy PB's DB → remove WAL copy → open READWRITE → insert → checkpoint → replace PB's DB
+    ///   B. Copy PB's DB → keep WAL copy → open READWRITE → insert → checkpoint → replace PB's DB
+    ///   C. Open original PB DB read-only with immutable URI (skips -shm) → read max values →
+    ///      create fresh DB at tmp → insert rows → replace PB's DB (existing PB wallpapers
+    ///      may need one respring to re-register via PB's own filesystem scan)
+    ///   D. Nuclear: delete PB's DB entirely so PosterBoard is forced to do a full filesystem
+    ///      scan on next launch — all descriptor folders (including ours) are re-discovered.
     static func writeToPosterBoardDB(appHash: String, entries: [(uuid: String, ext: String)]) {
         guard !entries.isEmpty else { return }
 
@@ -148,13 +147,10 @@ class SymHandler {
         let shmPath = dbPath + "-shm"
         let dbDir   = (dbPath as NSString).deletingLastPathComponent
 
-        // Use the real process temp dir — guaranteed in our sandbox for raw POSIX I/O.
-        // LC_HOME_PATH/Documents works for Foundation APIs but SQLite's raw open()
-        // can be blocked there by the kernel sandbox in LiveContainer.
         let tmpDBPath  = (NSTemporaryDirectory() as NSString).appendingPathComponent("pp_pb_db.sqlite3")
         let tmpWALPath = tmpDBPath + "-wal"
 
-        var diag: [String] = ["appHash=\(appHash) entries=\(entries.count)"]
+        var diag: [String] = ["=== writeToPosterBoardDB ===", "appHash=\(appHash) entries=\(entries.count)"]
         defer {
             let text = diag.joined(separator: "\n")
             try? text.write(to: getLCDocumentsDirectory().appendingPathComponent("pp_db_diag.txt"),
@@ -162,157 +158,283 @@ class SymHandler {
         }
 
         let fm = FileManager.default
-
-        // Clean up any leftover temp files from a prior run.
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
 
-        // --- 1. Read PosterBoard's DB into our container ---
-        // File extension grants stat + read but NOT write (rc=14 on open READWRITE).
+        // ── sandbox extensions ────────────────────────────────────────────────
         guard let dbReadHandle = try? BadQuery.consume(path: dbPath, create: true) else {
             diag.append("FAIL consume DB file"); return
         }
-        diag.append("OK consume DB file")
+        defer { dbReadHandle.release() }
+        let walReadHandle = try? BadQuery.consume(path: walPath, create: true)
+        defer { walReadHandle?.release() }
 
         guard fm.fileExists(atPath: dbPath) else {
-            dbReadHandle.release()
-            diag.append("FAIL DB not found"); return
+            diag.append("FAIL DB not found at \(dbPath)"); return
         }
-        diag.append("OK DB exists")
 
-        do {
-            try fm.copyItem(atPath: dbPath, toPath: tmpDBPath)
-            diag.append("OK copy main DB")
-        } catch {
-            dbReadHandle.release()
-            diag.append("FAIL copy main DB: \(error)"); return
+        // ── copy PB's DB into our tmp ─────────────────────────────────────────
+        guard (try? fm.copyItem(atPath: dbPath, toPath: tmpDBPath)) != nil else {
+            diag.append("FAIL copyItem main DB"); return
         }
-        dbReadHandle.release()
-
-        // Force 0644 — the copy may inherit PosterBoard's read-only permissions,
-        // which would make sqlite3_open_v2 with READWRITE return SQLITE_CANTOPEN=14.
         try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpDBPath)
-        if let attrs = try? fm.attributesOfItem(atPath: tmpDBPath),
-           let perms = attrs[.posixPermissions] as? Int {
-            diag.append("DB perms after chmod: \(String(perms, radix: 8))")
-        }
 
-        // Also copy WAL so our SQLite session sees committed-but-uncheckpointed data.
-        let walReadHandle = try? BadQuery.consume(path: walPath, create: true)
-        if fm.fileExists(atPath: walPath) {
-            try? fm.copyItem(atPath: walPath, toPath: tmpWALPath)
-            try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpWALPath)
-            diag.append("WAL copied: \(fm.fileExists(atPath: tmpWALPath))")
-        } else {
-            diag.append("no WAL present")
-        }
-        walReadHandle?.release()
-
-        // --- Deep diagnostics before attempting open ---
-        diag.append("tmpDBPath=\(tmpDBPath)")
+        // ── diagnostics ───────────────────────────────────────────────────────
         if let attrs = try? fm.attributesOfItem(atPath: tmpDBPath) {
-            diag.append("size=\(attrs[.size] ?? "?")")
+            let perms  = attrs[.posixPermissions] as? Int ?? -1
+            let prot   = attrs[FileAttributeKey.protectionKey] as? String ?? "n/a"
+            let size   = attrs[.size] as? Int ?? -1
+            diag.append("copy: perms=\(String(perms, radix: 8)) prot=\(prot) size=\(size)")
         }
-        // Read first 20 bytes to check SQLite header magic and WAL mode bytes 18-19
         if let data = fm.contents(atPath: tmpDBPath), data.count >= 20 {
-            diag.append("header: \(data.prefix(16).map { String(format:"%02x",$0) }.joined()) WAL_bytes=\(data[18]) \(data[19])")
+            let magic = data.prefix(16).map { String(format: "%02x", $0) }.joined()
+            diag.append("header: \(magic)  WAL_mode_bytes=\(data[18]).\(data[19])")
         }
-        // Direct POSIX open test — bypasses SQLite, tests raw kernel access
         let posixFd = Darwin.open(tmpDBPath, O_RDWR)
-        let posixErrno = Darwin.errno
-        diag.append("posix O_RDWR fd=\(posixFd) errno=\(posixErrno)")
+        let posixErr = Darwin.errno
+        diag.append("posix O_RDWR: fd=\(posixFd) errno=\(posixErr)")
         if posixFd >= 0 { Darwin.close(posixFd) }
-        // Can SQLite create ANY new file in the same directory?
-        let freshPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("pp_fresh_test.sqlite3")
-        var freshDb: OpaquePointer?
-        let freshRC = sqlite3_open_v2(freshPath, &freshDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
-        diag.append("fresh DB test rc=\(freshRC)")
-        if freshRC == SQLITE_OK { sqlite3_close(freshDb) }
-        try? fm.removeItem(atPath: freshPath)
-        // --- 2. Open our copy and insert rows ---
-        var db: OpaquePointer?
-        let openRC = sqlite3_open_v2(tmpDBPath, &db, SQLITE_OPEN_READWRITE, nil)
-        let openErrno = Darwin.errno
-        diag.append("open copy rc=\(openRC) errno=\(openErrno)")
-        if openRC != SQLITE_OK {
-            if let db = db {
-                sqlite3_extended_result_codes(db, 1)
-                diag.append("errmsg=\(String(cString: sqlite3_errmsg(db)))")
-                diag.append("extended_rc=\(sqlite3_extended_errcode(db))")
-                sqlite3_close(db)
+        let freshTestPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("pp_sqlitetest_\(arc4random()).sqlite3")
+        var ftDb: OpaquePointer?
+        let ftRC = sqlite3_open_v2(freshTestPath, &ftDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        let ftErr = Darwin.errno
+        if ftRC == SQLITE_OK { sqlite3_close(ftDb) }
+        try? fm.removeItem(atPath: freshTestPath)
+        diag.append("sqlite3 create-test: rc=\(ftRC) errno=\(ftErr)")
+        let writeTestPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("pp_writetest")
+        let writeTestOK = fm.createFile(atPath: writeTestPath, contents: Data([1]), attributes: nil)
+        try? fm.removeItem(atPath: writeTestPath)
+        diag.append("fm.createFile in tmpDir: \(writeTestOK)")
+        diag.append("isWritable copy: \(fm.isWritableFile(atPath: tmpDBPath))")
+
+        // ── also copy WAL ─────────────────────────────────────────────────────
+        var walCopied = false
+        if fm.fileExists(atPath: walPath) {
+            if (try? fm.copyItem(atPath: walPath, toPath: tmpWALPath)) != nil {
+                try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpWALPath)
+                walCopied = true
             }
-            return
         }
-        defer { sqlite3_close(db) }
+        diag.append("WAL copied=\(walCopied)")
 
-        sqlite3_busy_timeout(db, 3000)
-
-        // Apply any WAL transactions so we see the full current state.
-        let ckRC1 = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
-        diag.append("checkpoint(pre) rc=\(ckRC1)")
-
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "PRAGMA journal_mode", -1, &stmt, nil) == SQLITE_OK,
-           sqlite3_step(stmt) == SQLITE_ROW,
-           let mode = sqlite3_column_text(stmt, 0) { diag.append("journal_mode=\(String(cString: mode))") }
-        sqlite3_finalize(stmt); stmt = nil
-
-        var seq: Int64 = 0
-        if sqlite3_prepare_v2(db, "SELECT MAX(posterId) FROM poster", -1, &stmt, nil) == SQLITE_OK,
-           sqlite3_step(stmt) == SQLITE_ROW,
-           sqlite3_column_type(stmt, 0) != SQLITE_NULL { seq = sqlite3_column_int64(stmt, 0) }
-        sqlite3_finalize(stmt); stmt = nil
-        diag.append("max posterId=\(seq)")
-
-        var maxSortKey: Int64 = 0
-        if sqlite3_prepare_v2(db, "SELECT MAX(roleSortKey) FROM posterRoleMembership WHERE roleId='PRPosterRoleLockScreen'", -1, &stmt, nil) == SQLITE_OK,
-           sqlite3_step(stmt) == SQLITE_ROW,
-           sqlite3_column_type(stmt, 0) != SQLITE_NULL { maxSortKey = sqlite3_column_int64(stmt, 0) }
-        sqlite3_finalize(stmt); stmt = nil
-        diag.append("max sortKey=\(maxSortKey)")
-
-        let now = Date().timeIntervalSince1970
-        var successCount = 0
-        for entry in entries {
-            seq += 1; maxSortKey += 1
-            let payload = "{\"creationDate\":\(now),\"extensionAvailable\":true,\"attributeType\":\"PRPosterRoleAttributeTypeUsageMetadata\",\"lastActivatedDate\":\(now + 0.001),\"lastSelectedDate\":\(now + 0.0001)}"
-            let rc1 = sqlite3_exec(db, "INSERT OR IGNORE INTO poster (posterId, UUID, providerId) VALUES (\(seq), '\(entry.uuid)', '\(entry.ext)')", nil, nil, nil)
-            let rc2 = sqlite3_exec(db, "INSERT OR IGNORE INTO posterAttributes (posterUUID, roleId, attributeIdentifier, attributePayload) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', 'PRPosterRoleAttributeTypeUsageMetadata', '\(payload)')", nil, nil, nil)
-            let rc3 = sqlite3_exec(db, "INSERT OR IGNORE INTO posterRoleMembership (posterUUID, roleId, roleSortKey) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', \(maxSortKey))", nil, nil, nil)
-            diag.append("entry \(entry.uuid.prefix(8))... poster=\(rc1) attrs=\(rc2) role=\(rc3)")
-            if rc1 == SQLITE_OK && rc2 == SQLITE_OK && rc3 == SQLITE_OK { successCount += 1 }
+        // ── helper: run insert SQL into an open db handle ─────────────────────
+        func insertEntries(db: OpaquePointer, seq: inout Int64, maxSortKey: inout Int64,
+                           src: String) -> Int {
+            let now = Date().timeIntervalSince1970
+            var n = 0
+            for entry in entries {
+                seq += 1; maxSortKey += 1
+                let payload = "{\"creationDate\":\(now),\"extensionAvailable\":true," +
+                    "\"attributeType\":\"PRPosterRoleAttributeTypeUsageMetadata\"," +
+                    "\"lastActivatedDate\":\(now + 0.001),\"lastSelectedDate\":\(now + 0.0001)}"
+                let r1 = sqlite3_exec(db,
+                    "INSERT OR IGNORE INTO poster (posterId, UUID, providerId) " +
+                    "VALUES (\(seq), '\(entry.uuid)', '\(entry.ext)')", nil, nil, nil)
+                let r2 = sqlite3_exec(db,
+                    "INSERT OR IGNORE INTO posterAttributes (posterUUID, roleId, attributeIdentifier, attributePayload) " +
+                    "VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', 'PRPosterRoleAttributeTypeUsageMetadata', '\(payload)')",
+                    nil, nil, nil)
+                let r3 = sqlite3_exec(db,
+                    "INSERT OR IGNORE INTO posterRoleMembership (posterUUID, roleId, roleSortKey) " +
+                    "VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', \(maxSortKey))", nil, nil, nil)
+                diag.append("\(src) entry \(entry.uuid.prefix(8)): p=\(r1) a=\(r2) m=\(r3)")
+                if r1 == SQLITE_OK && r2 == SQLITE_OK && r3 == SQLITE_OK { n += 1 }
+            }
+            return n
         }
-        diag.append("inserted \(successCount)/\(entries.count)")
 
-        // Flush our changes out of WAL into the main DB file before we copy it back.
-        let ckRC2 = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
-        diag.append("checkpoint(post) rc=\(ckRC2)")
-        sqlite3_close(db); db = nil  // close before replacing in PosterBoard's dir
-
-        // --- 3. Replace PosterBoard's DB with our modified copy ---
-        // Directory extension grants write/create/delete within the dir.
-        guard let dirHandle = try? BadQuery.consume(path: dbDir, create: true) else {
-            diag.append("FAIL consume dbDir"); return
+        // ── helper: replace PB's DB files with a file at srcPath ─────────────
+        func replaceDB(srcPath: String) -> Bool {
+            guard let dirHandle = try? BadQuery.consume(path: dbDir, create: true) else {
+                diag.append("FAIL consume dbDir"); return false
+            }
+            defer { dirHandle.release() }
+            try? fm.removeItem(atPath: walPath)
+            try? fm.removeItem(atPath: shmPath)
+            try? fm.removeItem(atPath: dbPath)
+            do {
+                try fm.copyItem(atPath: srcPath, toPath: dbPath)
+                diag.append("OK DB replaced from \(srcPath)")
+                return true
+            } catch {
+                diag.append("FAIL replaceDB: \(error)"); return false
+            }
         }
-        defer { dirHandle.release() }
 
-        // Unlink stale WAL/SHM (they belonged to the old inode; PosterBoard will
-        // create fresh ones after respring when it opens our new main DB file).
-        try? fm.removeItem(atPath: walPath)
-        try? fm.removeItem(atPath: shmPath)
-        try? fm.removeItem(atPath: dbPath)
+        // ── helper: read max posterId / sortKey from an open db ───────────────
+        func readMaxValues(db: OpaquePointer) -> (seq: Int64, sortKey: Int64) {
+            var stmt: OpaquePointer?
+            var seq: Int64 = 0
+            var sk: Int64 = 0
+            if sqlite3_prepare_v2(db, "SELECT MAX(posterId) FROM poster", -1, &stmt, nil) == SQLITE_OK,
+               sqlite3_step(stmt) == SQLITE_ROW,
+               sqlite3_column_type(stmt, 0) != SQLITE_NULL { seq = sqlite3_column_int64(stmt, 0) }
+            sqlite3_finalize(stmt); stmt = nil
+            if sqlite3_prepare_v2(db,
+                "SELECT MAX(roleSortKey) FROM posterRoleMembership WHERE roleId='PRPosterRoleLockScreen'",
+                -1, &stmt, nil) == SQLITE_OK,
+               sqlite3_step(stmt) == SQLITE_ROW,
+               sqlite3_column_type(stmt, 0) != SQLITE_NULL { sk = sqlite3_column_int64(stmt, 0) }
+            sqlite3_finalize(stmt)
+            return (seq, sk)
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH A — open copy WITHOUT WAL (WAL may put sqlite3 into recovery)
+        // ══════════════════════════════════════════════════════════════════════
+        var didSucceed = false
 
         do {
-            try fm.copyItem(atPath: tmpDBPath, toPath: dbPath)
-            diag.append("OK copy back → DB replaced")
-        } catch {
-            diag.append("FAIL copy back: \(error)")
+            try? fm.removeItem(atPath: tmpWALPath)      // skip WAL on first try
+            var db: OpaquePointer?
+            let rc = sqlite3_open_v2(tmpDBPath, &db, SQLITE_OPEN_READWRITE, nil)
+            let err = Darwin.errno
+            diag.append("[A] open no-WAL: rc=\(rc) errno=\(err)")
+            if rc == SQLITE_OK, let db = db {
+                sqlite3_busy_timeout(db, 3000)
+                sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                var jmStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, "PRAGMA journal_mode", -1, &jmStmt, nil) == SQLITE_OK,
+                   sqlite3_step(jmStmt) == SQLITE_ROW, let m = sqlite3_column_text(jmStmt, 0) {
+                    diag.append("[A] journal_mode=\(String(cString: m))")
+                }
+                sqlite3_finalize(jmStmt)
+                var (seq, sk) = readMaxValues(db: db)
+                diag.append("[A] maxPosterId=\(seq) maxSortKey=\(sk)")
+                let n = insertEntries(db: db, seq: &seq, maxSortKey: &sk, src: "A")
+                sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                sqlite3_close(db)
+                diag.append("[A] inserted \(n)/\(entries.count)")
+                if n == entries.count && replaceDB(srcPath: tmpDBPath) {
+                    didSucceed = true
+                    diag.append("[A] SUCCESS")
+                }
+            } else {
+                if let db = db {
+                    diag.append("[A] errmsg=\(String(cString: sqlite3_errmsg(db)))")
+                    sqlite3_close(db)
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH B — open copy WITH WAL copy present
+        // ══════════════════════════════════════════════════════════════════════
+        if !didSucceed {
+            try? fm.removeItem(atPath: tmpDBPath)
+            try? fm.removeItem(atPath: tmpWALPath)
+            if (try? fm.copyItem(atPath: dbPath, toPath: tmpDBPath)) != nil {
+                try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpDBPath)
+                if walCopied, (try? fm.copyItem(atPath: walPath, toPath: tmpWALPath)) != nil {
+                    try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: tmpWALPath)
+                }
+                var db: OpaquePointer?
+                let rc = sqlite3_open_v2(tmpDBPath, &db, SQLITE_OPEN_READWRITE, nil)
+                let err = Darwin.errno
+                diag.append("[B] open with-WAL: rc=\(rc) errno=\(err)")
+                if rc == SQLITE_OK, let db = db {
+                    sqlite3_busy_timeout(db, 3000)
+                    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                    var (seq, sk) = readMaxValues(db: db)
+                    diag.append("[B] maxPosterId=\(seq) maxSortKey=\(sk)")
+                    let n = insertEntries(db: db, seq: &seq, maxSortKey: &sk, src: "B")
+                    sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                    sqlite3_close(db)
+                    diag.append("[B] inserted \(n)/\(entries.count)")
+                    if n == entries.count && replaceDB(srcPath: tmpDBPath) {
+                        didSucceed = true
+                        diag.append("[B] SUCCESS")
+                    }
+                } else {
+                    if let db = db {
+                        sqlite3_extended_result_codes(db, 1)
+                        diag.append("[B] errmsg=\(String(cString: sqlite3_errmsg(db))) ext=\(sqlite3_extended_errcode(db))")
+                        sqlite3_close(db)
+                    }
+                }
+            } else {
+                diag.append("[B] FAIL re-copy DB")
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH C — open original PB DB read-only with immutable URI (no -shm),
+        //              read max values, create fresh DB, insert our rows, replace
+        // ══════════════════════════════════════════════════════════════════════
+        if !didSucceed {
+            diag.append("[C] trying immutable RO + fresh DB")
+            var seq: Int64 = 0
+            var sk: Int64 = 0
+
+            // Read max values from original using immutable mode (skips -shm creation)
+            let roURI = "file://\(dbPath)?immutable=1"
+            var roDb: OpaquePointer?
+            let roRC = sqlite3_open_v2(roURI, &roDb, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil)
+            let roErr = Darwin.errno
+            diag.append("[C] immutable RO open: rc=\(roRC) errno=\(roErr)")
+            if roRC == SQLITE_OK, let roDb = roDb {
+                (seq, sk) = readMaxValues(db: roDb)
+                sqlite3_close(roDb)
+                diag.append("[C] maxPosterId=\(seq) maxSortKey=\(sk)")
+            } else {
+                if let roDb = roDb { sqlite3_close(roDb) }
+                diag.append("[C] RO open failed — will use seq=0 sk=0 (may conflict with existing rows)")
+            }
+
+            // Create fresh DB at tmp path
+            try? fm.removeItem(atPath: tmpDBPath)
+            try? fm.removeItem(atPath: tmpWALPath)
+            var freshDb: OpaquePointer?
+            let frRC = sqlite3_open_v2(tmpDBPath, &freshDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+            let frErr = Darwin.errno
+            diag.append("[C] fresh create: rc=\(frRC) errno=\(frErr)")
+            if frRC == SQLITE_OK, let freshDb = freshDb {
+                sqlite3_exec(freshDb, "CREATE TABLE IF NOT EXISTS poster " +
+                    "(posterId INTEGER, UUID TEXT NOT NULL, providerId TEXT NOT NULL)", nil, nil, nil)
+                sqlite3_exec(freshDb, "CREATE TABLE IF NOT EXISTS posterAttributes " +
+                    "(posterUUID TEXT NOT NULL, roleId TEXT NOT NULL, " +
+                    "attributeIdentifier TEXT NOT NULL, attributePayload TEXT)", nil, nil, nil)
+                sqlite3_exec(freshDb, "CREATE TABLE IF NOT EXISTS posterRoleMembership " +
+                    "(posterUUID TEXT NOT NULL, roleId TEXT NOT NULL, roleSortKey INTEGER)", nil, nil, nil)
+                let n = insertEntries(db: freshDb, seq: &seq, maxSortKey: &sk, src: "C")
+                sqlite3_exec(freshDb, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                sqlite3_close(freshDb)
+                diag.append("[C] inserted \(n)/\(entries.count)")
+                if replaceDB(srcPath: tmpDBPath) {
+                    didSucceed = true
+                    diag.append("[C] SUCCESS (fresh DB; PB will rescan existing wallpapers on restart)")
+                }
+            } else {
+                if let freshDb = freshDb { sqlite3_close(freshDb) }
+                diag.append("[C] FAIL create fresh DB")
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH D — nuclear: delete PB's entire DB so it must do a full
+        //              filesystem scan on next launch, re-discovering ALL descriptor
+        //              folders including ours
+        // ══════════════════════════════════════════════════════════════════════
+        if !didSucceed {
+            diag.append("[D] nuclear: deleting PB DB to force filesystem rescan")
+            guard let dirHandle = try? BadQuery.consume(path: dbDir, create: true) else {
+                diag.append("[D] FAIL consume dbDir — cannot proceed"); return
+            }
+            defer { dirHandle.release() }
+            let d1 = (try? fm.removeItem(atPath: dbPath)) != nil || !fm.fileExists(atPath: dbPath)
+            let d2 = (try? fm.removeItem(atPath: walPath)) != nil || !fm.fileExists(atPath: walPath)
+            let d3 = (try? fm.removeItem(atPath: shmPath)) != nil || !fm.fileExists(atPath: shmPath)
+            diag.append("[D] deleted db=\(d1) wal=\(d2) shm=\(d3)")
+            didSucceed = d1
+            if didSucceed {
+                diag.append("[D] SUCCESS — PosterBoard will rescan all descriptor folders on next launch")
+            }
         }
 
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
-
-        print("writeToPosterBoardDB: wrote \(successCount)/\(entries.count) entry/entries to PosterBoard DB")
+        diag.append("=== done didSucceed=\(didSucceed) ===")
+        print("writeToPosterBoardDB: done didSucceed=\(didSucceed)")
     }
 
     /// Copy files into an absolute directory under an app container via bad_query.
