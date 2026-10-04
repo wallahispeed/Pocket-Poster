@@ -124,6 +124,29 @@ class SymHandler {
             if let err = lastError { throw err }
             writtenUUIDs.append(destName)
         }
+
+        // Write Collection.plist to the descriptors/ directory so that
+        // WKWallpaperRepresentingCollection.shouldLoadWallpaperCollectionAtURL: accepts it.
+        // iOS 26.5 _loadCollections calls this class method for each candidate directory;
+        // without Collection.plist the entire collection is silently skipped.
+        let collHandle = try? BadQuery.consume(path: destPath, create: true)
+        defer { collHandle?.release() }
+        let collMeta: [String: Any] = [
+            "wallpaperCollectionIdentifier": "com.custom.pocketposter.collection",
+            "displayName": "Custom Wallpapers",
+            "hiddenFromPicker": false,
+            "wallpapersShareBaseAppearance": false,
+            "depthEffectDisabled": false,
+            "motionEffectsDisabled": false,
+            "disableRotation": false
+        ]
+        if let plistData = try? PropertyListSerialization.data(
+            fromPropertyList: collMeta, format: .xml, options: 0) {
+            let collPlistURL = URL(fileURLWithPath: destPath)
+                .appendingPathComponent("Collection.plist")
+            try? plistData.write(to: collPlistURL)
+        }
+
         return writtenUUIDs
     }
 
@@ -200,6 +223,15 @@ class SymHandler {
                             defer { sh.release() }
                             let items = (try? fm.contentsOfDirectory(atPath: sp)) ?? []
                             diag.append("    \(sub): \(items.joined(separator: ","))")
+                            // One more level to see inside Extensions/
+                            for item in items where !item.hasPrefix(".") {
+                                let ip = "\(sp)/\(item)"
+                                if let ih = try? BadQuery.consume(path: ip, create: true) {
+                                    defer { ih.release() }
+                                    let itemContents = (try? fm.contentsOfDirectory(atPath: ip)) ?? []
+                                    diag.append("      \(item): \(itemContents.joined(separator: ","))")
+                                }
+                            }
                         }
                     }
                 }
@@ -233,6 +265,47 @@ class SymHandler {
             }
         } else {
             diag.append("ourDesc: not accessible (path=\(ourDescPath))")
+        }
+
+        // ── Probe shouldLoadWallpaperCollectionAtURL: and shouldLoadWallpaperBundleAtURL: ──
+        // These class methods are the gatekeepers iOS 26.5 _loadCollections uses.
+        // Unlike _loadCollections itself, these just check files on disk — no process context needed.
+        dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
+        let ourDescURL = URL(fileURLWithPath: ourDescPath)
+        if let colClsObj = objc_getClass("WKWallpaperRepresentingCollection"),
+           let metaCls = object_getClass(colClsObj as AnyObject) {
+            let collSel = Selector("shouldLoadWallpaperCollectionAtURL:")
+            if let m = class_getInstanceMethod(metaCls, collSel) {
+                typealias ShouldLoadColl = @convention(c) (AnyObject, Selector, NSURL) -> Bool
+                let imp = unsafeBitCast(method_getImplementation(m), to: ShouldLoadColl.self)
+                let result = imp(colClsObj as AnyObject, collSel, ourDescURL as NSURL)
+                diag.append("shouldLoadCollectionAtURL(descriptors/): \(result)")
+            } else {
+                diag.append("shouldLoadCollectionAtURL: method not found on metaclass")
+            }
+        }
+        // Probe shouldLoadWallpaperBundleAtURL: on the first UUID folder
+        if let bndClsObj = objc_getClass("WKWallpaperBundle"),
+           let bndMetaCls = object_getClass(bndClsObj as AnyObject) {
+            let bndSel = Selector("shouldLoadWallpaperBundleAtURL:")
+            if let m = class_getInstanceMethod(bndMetaCls, bndSel) {
+                typealias ShouldLoadBundle = @convention(c) (AnyObject, Selector, NSURL) -> Bool
+                let imp = unsafeBitCast(method_getImplementation(m), to: ShouldLoadBundle.self)
+                if let dH2 = try? BadQuery.consume(path: ourDescPath, create: true) {
+                    defer { dH2.release() }
+                    let uuids2 = (try? fm.contentsOfDirectory(atPath: ourDescPath)) ?? []
+                    if let firstUUID = uuids2.first(where: { !$0.hasPrefix(".") && $0 != "Collection.plist" }) {
+                        let bundleURL = ourDescURL.appendingPathComponent(firstUUID)
+                        if let bH = try? BadQuery.consume(path: bundleURL.path, create: true) {
+                            defer { bH.release() }
+                            let result = imp(bndClsObj as AnyObject, bndSel, bundleURL as NSURL)
+                            diag.append("shouldLoadBundleAtURL(\(firstUUID.prefix(8))): \(result)")
+                        }
+                    }
+                }
+            } else {
+                diag.append("shouldLoadBundleAtURL: method not found on metaclass")
+            }
         }
 
         try? fm.removeItem(atPath: tmpDBPath)
