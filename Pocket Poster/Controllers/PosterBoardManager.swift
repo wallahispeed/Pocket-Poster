@@ -314,6 +314,15 @@ class PosterBoardManager: ObservableObject {
         // rescans on its own (which can take several relaunches).
         if useBadQuery {
             SymHandler.writeToPosterBoardDB(appHash: appHash, entries: allDBEntries)
+
+            // Trigger posterboardd to immediately rebuild its collections from the
+            // freshly-written descriptor folders. posterboardd is a persistent daemon
+            // that does not restart on respring, so its in-memory cache stays stale
+            // unless we fire this notification. The language-change API is the only
+            // known trigger that forces a synchronous collection rescan.
+            if let lang = UserDefaults.standard.stringArray(forKey: "AppleLanguages")?.first {
+                _ = setSystemLanguage(to: lang)
+            }
         }
 
         // clean up all possible files
