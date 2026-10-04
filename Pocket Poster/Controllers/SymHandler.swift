@@ -245,7 +245,7 @@ class SymHandler {
             defer { dH.release() }
             let uuids = (try? fm.contentsOfDirectory(atPath: ourDescPath)) ?? []
             diag.append("ourDesc[\(uuids.count)]: \(uuids.joined(separator: ","))")
-            if let firstUUID = uuids.first(where: { !$0.hasPrefix(".") }) {
+            if let firstUUID = uuids.first(where: { !$0.hasPrefix(".") && $0 != "Collection.plist" }) {
                 let fp = "\(ourDescPath)/\(firstUUID)"
                 if let fH = try? BadQuery.consume(path: fp, create: true) {
                     defer { fH.release() }
@@ -256,8 +256,37 @@ class SymHandler {
                         if let data = fm.contents(atPath: filePath) {
                             if let s = String(data: data, encoding: .utf8) {
                                 diag.append("    \(f): \(s.prefix(200))")
+                            } else if let plist = try? PropertyListSerialization.propertyList(
+                                from: data, options: [], format: nil) {
+                                diag.append("    \(f) [plist]: \(String(describing: plist).prefix(500))")
                             } else {
                                 diag.append("    \(f): [binary \(data.count)b]")
+                            }
+                        } else {
+                            // It's a directory — list and recurse one level
+                            if let subH = try? BadQuery.consume(path: filePath, create: true) {
+                                defer { subH.release() }
+                                let subItems = (try? fm.contentsOfDirectory(atPath: filePath)) ?? []
+                                diag.append("    \(f)/: \(subItems.joined(separator: ","))")
+                                for si in subItems where !si.hasPrefix(".") {
+                                    let siPath = "\(filePath)/\(si)"
+                                    if let siH = try? BadQuery.consume(path: siPath, create: true) {
+                                        defer { siH.release() }
+                                        if let siData = fm.contents(atPath: siPath) {
+                                            if let s = String(data: siData, encoding: .utf8) {
+                                                diag.append("      \(f)/\(si): \(s.prefix(100))")
+                                            } else if let pl = try? PropertyListSerialization.propertyList(
+                                                from: siData, options: [], format: nil) {
+                                                diag.append("      \(f)/\(si) [plist]: \(String(describing: pl).prefix(400))")
+                                            } else {
+                                                diag.append("      \(f)/\(si): [binary \(siData.count)b]")
+                                            }
+                                        } else {
+                                            let subSub = (try? fm.contentsOfDirectory(atPath: siPath)) ?? []
+                                            diag.append("      \(f)/\(si)/: \(subSub.joined(separator: ","))")
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -267,44 +296,83 @@ class SymHandler {
             diag.append("ourDesc: not accessible (path=\(ourDescPath))")
         }
 
+        // ── GalleryCache — PB's serialized collection list (ground truth for schema) ──────
+        let galleryCachePath = BadQuery.applicationContainerPath(appHash: appHash) +
+            "/Library/Application Support/PRBPosterExtensionDataStore/61/GalleryCache"
+        if let gcH = try? BadQuery.consume(path: galleryCachePath, create: true) {
+            defer { gcH.release() }
+            let gcFiles = (try? fm.contentsOfDirectory(atPath: galleryCachePath)) ?? []
+            for gcFile in gcFiles where gcFile.hasSuffix(".plist") {
+                let gcFilePath = "\(galleryCachePath)/\(gcFile)"
+                if let gcData = fm.contents(atPath: gcFilePath),
+                   let gcPlist = try? PropertyListSerialization.propertyList(
+                       from: gcData, options: [], format: nil) {
+                    let s = String(describing: gcPlist)
+                    // Log up to 3000 chars — truncate if longer
+                    let lines = stride(from: 0, to: min(s.count, 3000), by: 200).map {
+                        String(s[s.index(s.startIndex, offsetBy: $0)..<s.index(s.startIndex, offsetBy: min($0+200, s.count))])
+                    }
+                    diag.append("GalleryCache \(gcFile) [\(s.count) chars]:")
+                    lines.forEach { diag.append("  \($0)") }
+                }
+            }
+        } else {
+            diag.append("GalleryCache: not accessible")
+        }
+
         // ── Probe shouldLoadWallpaperCollectionAtURL: and shouldLoadWallpaperBundleAtURL: ──
         // These class methods are the gatekeepers iOS 26.5 _loadCollections uses.
         // Unlike _loadCollections itself, these just check files on disk — no process context needed.
         dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
         let ourDescURL = URL(fileURLWithPath: ourDescPath)
-        if let colClsObj = objc_getClass("WKWallpaperRepresentingCollection"),
-           let metaCls = object_getClass(colClsObj as AnyObject) {
-            let collSel = Selector("shouldLoadWallpaperCollectionAtURL:")
-            if let m = class_getInstanceMethod(metaCls, collSel) {
-                typealias ShouldLoadColl = @convention(c) (AnyObject, Selector, NSURL) -> Bool
-                let imp = unsafeBitCast(method_getImplementation(m), to: ShouldLoadColl.self)
-                let result = imp(colClsObj as AnyObject, collSel, ourDescURL as NSURL)
-                diag.append("shouldLoadCollectionAtURL(descriptors/): \(result)")
-            } else {
-                diag.append("shouldLoadCollectionAtURL: method not found on metaclass")
-            }
+
+        func shouldLoadColl() -> Bool {
+            guard let cls = objc_getClass("WKWallpaperRepresentingCollection"),
+                  let meta = object_getClass(cls as AnyObject) else { return false }
+            let sel = Selector("shouldLoadWallpaperCollectionAtURL:")
+            guard let m = class_getInstanceMethod(meta, sel) else { return false }
+            typealias F = @convention(c) (AnyObject, Selector, NSURL) -> Bool
+            return unsafeBitCast(method_getImplementation(m), to: F.self)(
+                cls as AnyObject, sel, ourDescURL as NSURL)
         }
-        // Probe shouldLoadWallpaperBundleAtURL: on the first UUID folder
-        if let bndClsObj = objc_getClass("WKWallpaperBundle"),
-           let bndMetaCls = object_getClass(bndClsObj as AnyObject) {
-            let bndSel = Selector("shouldLoadWallpaperBundleAtURL:")
-            if let m = class_getInstanceMethod(bndMetaCls, bndSel) {
-                typealias ShouldLoadBundle = @convention(c) (AnyObject, Selector, NSURL) -> Bool
-                let imp = unsafeBitCast(method_getImplementation(m), to: ShouldLoadBundle.self)
-                if let dH2 = try? BadQuery.consume(path: ourDescPath, create: true) {
-                    defer { dH2.release() }
-                    let uuids2 = (try? fm.contentsOfDirectory(atPath: ourDescPath)) ?? []
-                    if let firstUUID = uuids2.first(where: { !$0.hasPrefix(".") && $0 != "Collection.plist" }) {
-                        let bundleURL = ourDescURL.appendingPathComponent(firstUUID)
-                        if let bH = try? BadQuery.consume(path: bundleURL.path, create: true) {
-                            defer { bH.release() }
-                            let result = imp(bndClsObj as AnyObject, bndSel, bundleURL as NSURL)
-                            diag.append("shouldLoadBundleAtURL(\(firstUUID.prefix(8))): \(result)")
-                        }
-                    }
-                }
+        func shouldLoadBundle(_ uuid: String) -> Bool {
+            guard let cls = objc_getClass("WKWallpaperBundle"),
+                  let meta = object_getClass(cls as AnyObject) else { return false }
+            let sel = Selector("shouldLoadWallpaperBundleAtURL:")
+            guard let m = class_getInstanceMethod(meta, sel) else { return false }
+            typealias F = @convention(c) (AnyObject, Selector, NSURL) -> Bool
+            let url = ourDescURL.appendingPathComponent(uuid) as NSURL
+            return unsafeBitCast(method_getImplementation(m), to: F.self)(cls as AnyObject, sel, url)
+        }
+
+        diag.append("shouldLoadCollectionAtURL(descriptors/): \(shouldLoadColl())")
+
+        // Find first UUID folder (not Collection.plist)
+        var firstBundleUUID: String? = nil
+        if let dHx = try? BadQuery.consume(path: ourDescPath, create: true) {
+            defer { dHx.release() }
+            let uuidsX = (try? fm.contentsOfDirectory(atPath: ourDescPath)) ?? []
+            firstBundleUUID = uuidsX.first(where: { !$0.hasPrefix(".") && $0 != "Collection.plist" })
+        }
+
+        if let uuid = firstBundleUUID {
+            diag.append("shouldLoadBundleAtURL(\(uuid.prefix(8))): \(shouldLoadBundle(uuid))")
+
+            // Test: write minimal Wallpaper.plist to UUID folder and immediately re-probe.
+            // Determines if shouldLoadWallpaperBundleAtURL: only checks file existence
+            // (i.e. does Wallpaper.plist need to exist, regardless of content?).
+            let bundleDir = ourDescURL.appendingPathComponent(uuid)
+            let wpPlistURL = bundleDir.appendingPathComponent("Wallpaper.plist")
+            let wpMeta: [String: Any] = ["identifier": "pp-\(uuid.prefix(8))", "version": 1, "name": "Custom WP"]
+            if let wpData = try? PropertyListSerialization.data(
+                fromPropertyList: wpMeta, format: .xml, options: 0),
+               let bdH = try? BadQuery.consume(path: bundleDir.path, create: true) {
+                defer { bdH.release() }
+                try? wpData.write(to: wpPlistURL)
+                diag.append("shouldLoadBundleAtURL after Wallpaper.plist: \(shouldLoadBundle(uuid))")
+                diag.append("shouldLoadCollectionAtURL after Wallpaper.plist: \(shouldLoadColl())")
             } else {
-                diag.append("shouldLoadBundleAtURL: method not found on metaclass")
+                diag.append("Wallpaper.plist test write failed")
             }
         }
 
