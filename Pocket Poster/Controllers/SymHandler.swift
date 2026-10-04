@@ -238,8 +238,7 @@ class SymHandler {
             }
         }
 
-        // ── Show what's inside our written descriptor folder ───────────────────
-        // Confirms files landed correctly and reveals the format we're writing.
+        // ── Show what's inside our written descriptor folder ──────────────────
         let ourDescPath = BadQuery.descriptorsPath(appHash: appHash, ext: "com.apple.WallpaperKit.CollectionsPoster")
         if let dH = try? BadQuery.consume(path: ourDescPath, create: true) {
             defer { dH.release() }
@@ -258,33 +257,45 @@ class SymHandler {
                                 diag.append("    \(f): \(s.prefix(200))")
                             } else if let plist = try? PropertyListSerialization.propertyList(
                                 from: data, options: [], format: nil) {
-                                diag.append("    \(f) [plist]: \(String(describing: plist).prefix(500))")
+                                diag.append("    \(f) [plist]: \(String(describing: plist).prefix(300))")
                             } else {
-                                diag.append("    \(f): [binary \(data.count)b]")
+                                diag.append("    \(f): [bin \(data.count)b]")
                             }
-                        } else {
-                            // It's a directory — list and recurse one level
-                            if let subH = try? BadQuery.consume(path: filePath, create: true) {
-                                defer { subH.release() }
-                                let subItems = (try? fm.contentsOfDirectory(atPath: filePath)) ?? []
-                                diag.append("    \(f)/: \(subItems.joined(separator: ","))")
-                                for si in subItems where !si.hasPrefix(".") {
-                                    let siPath = "\(filePath)/\(si)"
-                                    if let siH = try? BadQuery.consume(path: siPath, create: true) {
-                                        defer { siH.release() }
-                                        if let siData = fm.contents(atPath: siPath) {
-                                            if let s = String(data: siData, encoding: .utf8) {
-                                                diag.append("      \(f)/\(si): \(s.prefix(100))")
-                                            } else if let pl = try? PropertyListSerialization.propertyList(
-                                                from: siData, options: [], format: nil) {
-                                                diag.append("      \(f)/\(si) [plist]: \(String(describing: pl).prefix(400))")
+                        } else if let subH = try? BadQuery.consume(path: filePath, create: true) {
+                            defer { subH.release() }
+                            let subItems = (try? fm.contentsOfDirectory(atPath: filePath)) ?? []
+                            diag.append("    \(f)/: \(subItems.joined(separator: ","))")
+                            for si in subItems where !si.hasPrefix(".") {
+                                let siPath = "\(filePath)/\(si)"
+                                if let siH = try? BadQuery.consume(path: siPath, create: true) {
+                                    defer { siH.release() }
+                                    let siItems = (try? fm.contentsOfDirectory(atPath: siPath)) ?? []
+                                    diag.append("      \(f)/\(si)/: \(siItems.joined(separator: ","))")
+                                    for item in siItems where !item.hasPrefix(".") {
+                                        let itemPath = "\(siPath)/\(item)"
+                                        if let ih = try? BadQuery.consume(path: itemPath, create: true) {
+                                            defer { ih.release() }
+                                            if let iData = fm.contents(atPath: itemPath) {
+                                                if let s = String(data: iData, encoding: .utf8) {
+                                                    diag.append("        \(f)/\(si)/\(item): \(s.prefix(100))")
+                                                } else if let pl = try? PropertyListSerialization.propertyList(from: iData, options: [], format: nil) {
+                                                    diag.append("        \(f)/\(si)/\(item) [pl]: \(String(describing: pl).prefix(200))")
+                                                } else {
+                                                    diag.append("        \(f)/\(si)/\(item): [bin \(iData.count)b]")
+                                                }
                                             } else {
-                                                diag.append("      \(f)/\(si): [binary \(siData.count)b]")
+                                                let dd = (try? fm.contentsOfDirectory(atPath: itemPath)) ?? []
+                                                diag.append("        \(f)/\(si)/\(item)/: \(dd.joined(separator: ","))")
                                             }
-                                        } else {
-                                            let subSub = (try? fm.contentsOfDirectory(atPath: siPath)) ?? []
-                                            diag.append("      \(f)/\(si)/: \(subSub.joined(separator: ","))")
                                         }
+                                    }
+                                } else if let siData = fm.contents(atPath: siPath) {
+                                    if let s = String(data: siData, encoding: .utf8) {
+                                        diag.append("      \(f)/\(si): \(s.prefix(100))")
+                                    } else if let pl = try? PropertyListSerialization.propertyList(from: siData, options: [], format: nil) {
+                                        diag.append("      \(f)/\(si) [pl]: \(String(describing: pl).prefix(200))")
+                                    } else {
+                                        diag.append("      \(f)/\(si): [bin \(siData.count)b]")
                                     }
                                 }
                             }
@@ -293,87 +304,144 @@ class SymHandler {
                 }
             }
         } else {
-            diag.append("ourDesc: not accessible (path=\(ourDescPath))")
+            diag.append("ourDesc: not accessible")
         }
 
-        // ── GalleryCache — PB's serialized collection list (ground truth for schema) ──────
+        // ── Drill into working extension bundles to discover the correct format ───
+        // Other extensions (Gradient, LegacyPoster, PhotosAmbient) are known-working.
+        // Their descriptor UUID folder structure reveals what PB's _loadCollections accepts.
+        let extBasePath = BadQuery.applicationContainerPath(appHash: appHash) +
+            "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        for extName in ["com.apple.WallpaperKit.CollectionsPoster",
+                        "com.apple.GradientPoster.GradientPosterExtension",
+                        "com.apple.PaperBoard.LegacyPoster",
+                        "com.apple.PhotosUIPrivate.PhotosAmbientPosterProvider"] {
+            let descPath = "\(extBasePath)/\(extName)/descriptors"
+            guard let extDH = try? BadQuery.consume(path: descPath, create: true) else {
+                diag.append("wExt[\(extName.prefix(28))]: no access"); continue
+            }
+            defer { extDH.release() }
+            let uuidList = ((try? fm.contentsOfDirectory(atPath: descPath)) ?? [])
+                .filter { !$0.hasPrefix(".") && $0 != "Collection.plist" }
+            diag.append("wExt[\(extName.prefix(35))][\(uuidList.count)]")
+            guard let firstUUID = uuidList.first else { diag.append("  (empty)"); continue }
+            let bundlePath = "\(descPath)/\(firstUUID)"
+            guard let bH = try? BadQuery.consume(path: bundlePath, create: true) else { continue }
+            defer { bH.release() }
+            let bundleFiles = (try? fm.contentsOfDirectory(atPath: bundlePath)) ?? []
+            diag.append("  \(firstUUID.prefix(8)) topFiles: \(bundleFiles.joined(separator: ","))")
+            for bf in bundleFiles where !bf.hasPrefix(".") {
+                let bfPath = "\(bundlePath)/\(bf)"
+                if let bfData = fm.contents(atPath: bfPath) {
+                    if let s = String(data: bfData, encoding: .utf8) {
+                        diag.append("    \(bf): \(s.prefix(200))")
+                    } else if let pl = try? PropertyListSerialization.propertyList(from: bfData, options: [], format: nil) {
+                        diag.append("    \(bf) [pl]: \(String(describing: pl).prefix(300))")
+                    } else {
+                        diag.append("    \(bf): [bin \(bfData.count)b]")
+                    }
+                } else if let subH = try? BadQuery.consume(path: bfPath, create: true) {
+                    defer { subH.release() }
+                    let subs = (try? fm.contentsOfDirectory(atPath: bfPath)) ?? []
+                    diag.append("    \(bf)/: \(subs.joined(separator: ","))")
+                    for sub in subs where !sub.hasPrefix(".") {
+                        let subPath = "\(bfPath)/\(sub)"
+                        if let sh = try? BadQuery.consume(path: subPath, create: true) {
+                            defer { sh.release() }
+                            let subItems = (try? fm.contentsOfDirectory(atPath: subPath)) ?? []
+                            diag.append("      \(bf)/\(sub)/: \(subItems.joined(separator: ","))")
+                            for si in subItems where !si.hasPrefix(".") {
+                                let siPath = "\(subPath)/\(si)"
+                                if let siH = try? BadQuery.consume(path: siPath, create: true) {
+                                    defer { siH.release() }
+                                    if let siData = fm.contents(atPath: siPath) {
+                                        if let s = String(data: siData, encoding: .utf8) {
+                                            diag.append("        \(bf)/\(sub)/\(si): \(s.prefix(100))")
+                                        } else if let pl = try? PropertyListSerialization.propertyList(from: siData, options: [], format: nil) {
+                                            diag.append("        \(bf)/\(sub)/\(si) [pl]: \(String(describing: pl).prefix(200))")
+                                        } else {
+                                            diag.append("        \(bf)/\(sub)/\(si): [bin \(siData.count)b]")
+                                        }
+                                    } else {
+                                        let dd = (try? fm.contentsOfDirectory(atPath: siPath)) ?? []
+                                        diag.append("        \(bf)/\(sub)/\(si)/: \(dd.joined(separator: ","))")
+                                    }
+                                }
+                            }
+                        } else if let subData = fm.contents(atPath: subPath) {
+                            if let s = String(data: subData, encoding: .utf8) {
+                                diag.append("      \(bf)/\(sub): \(s.prefix(100))")
+                            } else if let pl = try? PropertyListSerialization.propertyList(from: subData, options: [], format: nil) {
+                                diag.append("      \(bf)/\(sub) [pl]: \(String(describing: pl).prefix(200))")
+                            } else {
+                                diag.append("      \(bf)/\(sub): [bin \(subData.count)b]")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── GalleryCache — NSKeyedUnarchiver (WK loaded) + raw string extraction ─
+        dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
         let galleryCachePath = BadQuery.applicationContainerPath(appHash: appHash) +
             "/Library/Application Support/PRBPosterExtensionDataStore/61/GalleryCache"
         if let gcH = try? BadQuery.consume(path: galleryCachePath, create: true) {
             defer { gcH.release() }
             let gcFiles = (try? fm.contentsOfDirectory(atPath: galleryCachePath)) ?? []
+            diag.append("GalleryCache files: \(gcFiles.joined(separator: ","))")
             for gcFile in gcFiles where gcFile.hasSuffix(".plist") {
                 let gcFilePath = "\(galleryCachePath)/\(gcFile)"
-                if let gcData = fm.contents(atPath: gcFilePath),
-                   let gcPlist = try? PropertyListSerialization.propertyList(
-                       from: gcData, options: [], format: nil) {
-                    let s = String(describing: gcPlist)
-                    // Log up to 3000 chars — truncate if longer
-                    let lines = stride(from: 0, to: min(s.count, 3000), by: 200).map {
-                        String(s[s.index(s.startIndex, offsetBy: $0)..<s.index(s.startIndex, offsetBy: min($0+200, s.count))])
+                guard let gcData = fm.contents(atPath: gcFilePath) else { continue }
+                diag.append("GalleryCacheFile \(gcFile): \(gcData.count)b")
+                do {
+                    let u = try NSKeyedUnarchiver(forReadingFrom: gcData)
+                    u.requiresSecureCoding = false
+                    if let decoded = u.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSObject {
+                        let desc = decoded.description
+                        diag.append("  unarchType=\(type(of: decoded))")
+                        for chunk in stride(from: 0, to: min(desc.count, 3000), by: 300) {
+                            let s = desc.index(desc.startIndex, offsetBy: chunk)
+                            let e = desc.index(s, offsetBy: min(300, desc.count - chunk))
+                            diag.append("  desc[\(chunk)]: \(desc[s..<e])")
+                        }
+                    } else {
+                        diag.append("  unarchived=nil")
                     }
-                    diag.append("GalleryCache \(gcFile) [\(s.count) chars]:")
-                    lines.forEach { diag.append("  \($0)") }
+                    u.finishDecoding()
+                } catch {
+                    diag.append("  unarchErr: \(error)")
+                }
+                if let gcPlist = try? PropertyListSerialization.propertyList(from: gcData, options: [], format: nil) {
+                    func extractStrs(_ v: Any) -> [String] {
+                        if let s = v as? String, s.count >= 6 { return [s] }
+                        if let a = v as? [Any] { return a.flatMap { extractStrs($0) } }
+                        if let d = v as? [String: Any] {
+                            return d.values.flatMap { extractStrs($0) } + d.keys.filter { $0.count >= 6 }
+                        }
+                        if let nd = v as? NSDictionary {
+                            var r: [String] = []
+                            nd.enumerateKeysAndObjects { k, val, _ in
+                                if let ks = k as? String, ks.count >= 6 { r.append(ks) }
+                                r.append(contentsOf: extractStrs(val))
+                            }
+                            return r
+                        }
+                        return []
+                    }
+                    let allS = extractStrs(gcPlist)
+                    let interestingS = allS.filter { s in
+                        let l = s.lowercased()
+                        return l.contains("wallpaper") || l.contains("collection") ||
+                               l.contains("poster") || l.contains("bundle") ||
+                               l.contains("com.apple") ||
+                               (s.count == 36 && s.filter { $0 == "-" }.count == 4)
+                    }
+                    diag.append("  gcStrs[\(interestingS.count)]: \(interestingS.prefix(50).joined(separator: "|"))")
                 }
             }
         } else {
             diag.append("GalleryCache: not accessible")
-        }
-
-        // ── Probe shouldLoadWallpaperCollectionAtURL: and shouldLoadWallpaperBundleAtURL: ──
-        // These class methods are the gatekeepers iOS 26.5 _loadCollections uses.
-        // Unlike _loadCollections itself, these just check files on disk — no process context needed.
-        dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
-        let ourDescURL = URL(fileURLWithPath: ourDescPath)
-
-        func shouldLoadColl() -> Bool {
-            guard let cls = objc_getClass("WKWallpaperRepresentingCollection"),
-                  let meta = object_getClass(cls as AnyObject) else { return false }
-            let sel = Selector("shouldLoadWallpaperCollectionAtURL:")
-            guard let m = class_getInstanceMethod(meta, sel) else { return false }
-            typealias F = @convention(c) (AnyObject, Selector, NSURL) -> Bool
-            return unsafeBitCast(method_getImplementation(m), to: F.self)(
-                cls as AnyObject, sel, ourDescURL as NSURL)
-        }
-        func shouldLoadBundle(_ uuid: String) -> Bool {
-            guard let cls = objc_getClass("WKWallpaperBundle"),
-                  let meta = object_getClass(cls as AnyObject) else { return false }
-            let sel = Selector("shouldLoadWallpaperBundleAtURL:")
-            guard let m = class_getInstanceMethod(meta, sel) else { return false }
-            typealias F = @convention(c) (AnyObject, Selector, NSURL) -> Bool
-            let url = ourDescURL.appendingPathComponent(uuid) as NSURL
-            return unsafeBitCast(method_getImplementation(m), to: F.self)(cls as AnyObject, sel, url)
-        }
-
-        diag.append("shouldLoadCollectionAtURL(descriptors/): \(shouldLoadColl())")
-
-        // Find first UUID folder (not Collection.plist)
-        var firstBundleUUID: String? = nil
-        if let dHx = try? BadQuery.consume(path: ourDescPath, create: true) {
-            defer { dHx.release() }
-            let uuidsX = (try? fm.contentsOfDirectory(atPath: ourDescPath)) ?? []
-            firstBundleUUID = uuidsX.first(where: { !$0.hasPrefix(".") && $0 != "Collection.plist" })
-        }
-
-        if let uuid = firstBundleUUID {
-            diag.append("shouldLoadBundleAtURL(\(uuid.prefix(8))): \(shouldLoadBundle(uuid))")
-
-            // Test: write minimal Wallpaper.plist to UUID folder and immediately re-probe.
-            // Determines if shouldLoadWallpaperBundleAtURL: only checks file existence
-            // (i.e. does Wallpaper.plist need to exist, regardless of content?).
-            let bundleDir = ourDescURL.appendingPathComponent(uuid)
-            let wpPlistURL = bundleDir.appendingPathComponent("Wallpaper.plist")
-            let wpMeta: [String: Any] = ["identifier": "pp-\(uuid.prefix(8))", "version": 1, "name": "Custom WP"]
-            if let wpData = try? PropertyListSerialization.data(
-                fromPropertyList: wpMeta, format: .xml, options: 0),
-               let bdH = try? BadQuery.consume(path: bundleDir.path, create: true) {
-                defer { bdH.release() }
-                try? wpData.write(to: wpPlistURL)
-                diag.append("shouldLoadBundleAtURL after Wallpaper.plist: \(shouldLoadBundle(uuid))")
-                diag.append("shouldLoadCollectionAtURL after Wallpaper.plist: \(shouldLoadColl())")
-            } else {
-                diag.append("Wallpaper.plist test write failed")
-            }
         }
 
         try? fm.removeItem(atPath: tmpDBPath)
