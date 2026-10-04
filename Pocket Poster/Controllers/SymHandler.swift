@@ -533,11 +533,22 @@ class SymHandler {
         try? fm.removeItem(atPath: tmpWALPath)
 
         if didSucceed {
-            // Give posterboardd time to detect the new DB file via FSEvents/kqueue.
-            // posterboardd watches its container directory; recreating the DB fires
-            // a DISPATCH_SOURCE_TYPE_VNODE event that should trigger a reload.
-            Thread.sleep(forTimeInterval: 5.0)
-            diag.append("slept 5s post-DB-write (FSEvents trigger window)")
+            // Open PosterBoard FIRST, before anything else.
+            // Descriptor folders are already written by this point (applyTendies calls
+            // writeDescriptorsViaBadQuery before writeToPosterBoardDB).
+            // PosterBoard's _loadCollections scans the descriptors directory on launch —
+            // opening it now gives it maximum time to complete that scan before respring.
+            if let wsCls = objc_getClass("LSApplicationWorkspace") as? NSObject.Type,
+               let ws = wsCls.perform(Selector(("defaultWorkspace")))?.takeUnretainedValue() as? NSObject {
+                let opened = ws.perform(Selector(("openApplicationWithBundleID:")), with: "com.apple.PosterBoard") != nil
+                diag.append("openPosterBoard (early): \(opened)")
+            }
+
+            // Sleep 15s while PB runs its launch sequence and _loadCollections.
+            // _loadCollections scans .../descriptors/ for custom wallpaper collections.
+            // 5s was not enough in the previous build — use 15s to be safe.
+            Thread.sleep(forTimeInterval: 15.0)
+            diag.append("slept 15s (PosterBoard _loadCollections window)")
 
             let center = CFNotificationCenterGetDarwinNotifyCenter()
 
@@ -666,14 +677,16 @@ class SymHandler {
                         diag.append("WK \(className) -[\(names.joined(separator: ","))]")
                         free(UnsafeMutableRawPointer(ms))
                     }
-                    for sharedSel in ["sharedDataStore", "sharedInstance", "defaultDataStore",
-                                       "sharedManager", "defaultStore", "sharedController",
+                    for sharedSel in ["defaultManager", "sharedDataStore", "sharedInstance",
+                                       "defaultDataStore", "sharedManager", "defaultStore",
+                                       "defaultWallpaperManager", "sharedController",
                                        "sharedProvider", "shared"] {
                         guard cls.responds(to: Selector(sharedSel)),
                               let inst = cls.perform(Selector(sharedSel))?.takeUnretainedValue() as? NSObject
                         else { continue }
                         diag.append("WK \(className) instance via \(sharedSel)")
-                        for reloadSel in ["reload", "reloadData", "invalidateCache", "rebuildCollections",
+                        for reloadSel in ["_loadCollections", "_loadSystemWallpaperCollections",
+                                          "reload", "reloadData", "invalidateCache", "rebuildCollections",
                                           "reloadFromStorage", "reloadFromDisk", "forceRefresh", "resetCaches",
                                           "reloadPosterData", "refreshPosterData", "loadData", "fetchData",
                                           "reloadExtensionData", "refreshExtensionData", "reloadAllData", "reset"] {
@@ -689,19 +702,7 @@ class SymHandler {
                 diag.append("WK objc_copyClassNamesForImage: returned nil")
             }
 
-            // ── openPosterBoard as final trigger ──────────────────────────────
-            // PosterBoard scans descriptor folders and updates posterboardd when it
-            // launches. The scan is async — sleep 5s after opening to let it finish
-            // before respring, otherwise it races with SpringBoard shutdown.
-            if let wsCls = objc_getClass("LSApplicationWorkspace") as? NSObject.Type,
-               let ws = wsCls.perform(Selector(("defaultWorkspace")))?.takeUnretainedValue() as? NSObject {
-                let opened = ws.perform(Selector(("openApplicationWithBundleID:")), with: "com.apple.PosterBoard") != nil
-                diag.append("openPosterBoard: \(opened)")
-                if opened {
-                    Thread.sleep(forTimeInterval: 5.0)
-                    diag.append("slept 5s post-openPosterBoard (scan window)")
-                }
-            }
+            // (openPosterBoard moved to top of this block for maximum scan time)
         }
 
         diag.append("=== done didSucceed=\(didSucceed) ===")
