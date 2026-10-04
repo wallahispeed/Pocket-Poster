@@ -136,19 +136,21 @@ class SymHandler {
         let dbPath = BadQuery.applicationContainerPath(appHash: appHash)
             + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
 
-        guard FileManager.default.fileExists(atPath: dbPath) else {
-            print("writeToPosterBoardDB: DB not present — skipping")
-            return
-        }
-
         // Extend sandbox to the DB file itself so sqlite3_open can open it directly.
         // Opening in-place (no copy/replace) lets SQLite's WAL handle concurrent access
         // with the running PosterBoard process safely.
+        // create:true skips BadQuery's lstat check so the token is issued regardless
+        // of whether the file exists yet; we then check existence under the extension.
         guard let handle = try? BadQuery.consume(path: dbPath, create: true) else {
             print("writeToPosterBoardDB: cannot sandbox-extend DB file — skipping")
             return
         }
         defer { handle.release() }
+
+        guard FileManager.default.fileExists(atPath: dbPath) else {
+            print("writeToPosterBoardDB: DB not present — skipping")
+            return
+        }
 
         var db: OpaquePointer?
         guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
