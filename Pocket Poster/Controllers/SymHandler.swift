@@ -171,11 +171,8 @@ class SymHandler {
             }
             // Search raw bytes for each entry UUID from the previous run to check survival
             if let data = fm.contents(atPath: dbPath) {
-                let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
                 for entry in entries {
-                    let found = raw.contains(entry.uuid) || (data.withUnsafeBytes { buf in
-                        buf.windows(ofCount: entry.uuid.utf8.count).contains { $0.elementsEqual(entry.uuid.utf8) }
-                    })
+                    let found = data.range(of: Data(entry.uuid.utf8)) != nil
                     diag.append("pre-run uuid \(entry.uuid.prefix(8)) in DB raw bytes: \(found)")
                 }
             } else {
