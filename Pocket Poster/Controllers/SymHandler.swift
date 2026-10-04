@@ -136,16 +136,29 @@ class SymHandler {
         let dbPath = BadQuery.applicationContainerPath(appHash: appHash)
             + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
 
+        // Diagnostic log written to app Documents so it survives the respring.
+        // Read via Files app → On My iPhone → Pocket Poster → pp_db_diag.txt
+        var diag: [String] = ["appHash=\(appHash) entries=\(entries.count)"]
+        defer {
+            let text = diag.joined(separator: "\n")
+            try? text.write(to: getLCDocumentsDirectory().appendingPathComponent("pp_db_diag.txt"),
+                            atomically: true, encoding: .utf8)
+        }
+
         // A directory extension only authorises creating new entries inside the dir.
-        // Reading/writing an EXISTING file requires an extension on that file itself
+        // Reading/writing an EXISTING file requires an extension on the file itself
         // (same pattern as BadQuery.readBundleId which consumes on the file path).
         // sqlite3 also needs the -wal and -shm files, so extend all three.
         guard let dbHandle = try? BadQuery.consume(path: dbPath, create: true) else {
+            diag.append("FAIL consume DB")
             print("writeToPosterBoardDB: cannot sandbox-extend DB file — skipping")
             return
         }
+        diag.append("OK consume DB")
         let walHandle = try? BadQuery.consume(path: dbPath + "-wal", create: true)
+        diag.append("consume -wal: \(walHandle != nil ? "ok" : "nil")")
         let shmHandle = try? BadQuery.consume(path: dbPath + "-shm", create: true)
+        diag.append("consume -shm: \(shmHandle != nil ? "ok" : "nil")")
         defer {
             dbHandle.release()
             walHandle?.release()
@@ -154,46 +167,69 @@ class SymHandler {
 
         // fileExists is now authorised because we hold the file-level extension.
         guard FileManager.default.fileExists(atPath: dbPath) else {
+            diag.append("FAIL DB not found at \(dbPath)")
             print("writeToPosterBoardDB: DB not present — skipping")
             return
         }
+        diag.append("OK DB exists")
 
         var db: OpaquePointer?
         // READWRITE only — never create an empty DB at PosterBoard's path.
-        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
-            print("writeToPosterBoardDB: sqlite3_open_v2 failed")
+        let openRC = sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READWRITE, nil)
+        diag.append("open_v2 rc=\(openRC)")
+        guard openRC == SQLITE_OK else {
+            print("writeToPosterBoardDB: sqlite3_open_v2 failed rc=\(openRC)")
             return
         }
         defer { sqlite3_close(db) }
 
+        // Wait up to 3 s if PosterBoard holds a write lock (WAL mode serialises writers).
+        sqlite3_busy_timeout(db, 3000)
+
         var stmt: OpaquePointer?
 
-        var seq: Int64 = 0
-        if sqlite3_prepare_v2(db, "SELECT seq FROM sqlite_sequence WHERE name = 'poster'", -1, &stmt, nil) == SQLITE_OK,
-           sqlite3_step(stmt) == SQLITE_ROW {
-            seq = sqlite3_column_int64(stmt, 0)
+        // Log journal mode so we know if WAL is active.
+        if sqlite3_prepare_v2(db, "PRAGMA journal_mode", -1, &stmt, nil) == SQLITE_OK,
+           sqlite3_step(stmt) == SQLITE_ROW,
+           let mode = sqlite3_column_text(stmt, 0) {
+            diag.append("journal_mode=\(String(cString: mode))")
         }
         sqlite3_finalize(stmt); stmt = nil
 
-        var maxSortKey: Int64 = seq
-        if sqlite3_prepare_v2(db, "SELECT MAX(roleSortKey) FROM posterRoleMembership WHERE roleId = 'PRPosterRoleLockScreen'", -1, &stmt, nil) == SQLITE_OK,
+        // Use MAX(posterId) — works for both AUTOINCREMENT and plain INTEGER columns,
+        // unlike sqlite_sequence which only tracks AUTOINCREMENT tables.
+        var seq: Int64 = 0
+        if sqlite3_prepare_v2(db, "SELECT MAX(posterId) FROM poster", -1, &stmt, nil) == SQLITE_OK,
+           sqlite3_step(stmt) == SQLITE_ROW,
+           sqlite3_column_type(stmt, 0) != SQLITE_NULL {
+            seq = sqlite3_column_int64(stmt, 0)
+        }
+        sqlite3_finalize(stmt); stmt = nil
+        diag.append("max posterId=\(seq)")
+
+        var maxSortKey: Int64 = 0
+        if sqlite3_prepare_v2(db, "SELECT MAX(roleSortKey) FROM posterRoleMembership WHERE roleId='PRPosterRoleLockScreen'", -1, &stmt, nil) == SQLITE_OK,
            sqlite3_step(stmt) == SQLITE_ROW,
            sqlite3_column_type(stmt, 0) != SQLITE_NULL {
             maxSortKey = sqlite3_column_int64(stmt, 0)
         }
         sqlite3_finalize(stmt); stmt = nil
+        diag.append("max sortKey=\(maxSortKey)")
 
         let now = Date().timeIntervalSince1970
+        var successCount = 0
         for entry in entries {
             seq += 1
             maxSortKey += 1
             let payload = "{\"creationDate\":\(now),\"extensionAvailable\":true,\"attributeType\":\"PRPosterRoleAttributeTypeUsageMetadata\",\"lastActivatedDate\":\(now + 0.001),\"lastSelectedDate\":\(now + 0.0001)}"
-            sqlite3_exec(db, "INSERT OR IGNORE INTO poster (posterId, UUID, providerId) VALUES (\(seq), '\(entry.uuid)', '\(entry.ext)')", nil, nil, nil)
-            sqlite3_exec(db, "INSERT OR IGNORE INTO posterAttributes (posterUUID, roleId, attributeIdentifier, attributePayload) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', 'PRPosterRoleAttributeTypeUsageMetadata', '\(payload)')", nil, nil, nil)
-            sqlite3_exec(db, "INSERT OR IGNORE INTO posterRoleMembership (posterUUID, roleId, roleSortKey) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', \(maxSortKey))", nil, nil, nil)
+            let rc1 = sqlite3_exec(db, "INSERT OR IGNORE INTO poster (posterId, UUID, providerId) VALUES (\(seq), '\(entry.uuid)', '\(entry.ext)')", nil, nil, nil)
+            let rc2 = sqlite3_exec(db, "INSERT OR IGNORE INTO posterAttributes (posterUUID, roleId, attributeIdentifier, attributePayload) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', 'PRPosterRoleAttributeTypeUsageMetadata', '\(payload)')", nil, nil, nil)
+            let rc3 = sqlite3_exec(db, "INSERT OR IGNORE INTO posterRoleMembership (posterUUID, roleId, roleSortKey) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', \(maxSortKey))", nil, nil, nil)
+            diag.append("entry \(entry.uuid.prefix(8))... poster=\(rc1) attrs=\(rc2) role=\(rc3)")
+            if rc1 == SQLITE_OK && rc2 == SQLITE_OK && rc3 == SQLITE_OK { successCount += 1 }
         }
-        sqlite3_exec(db, "UPDATE sqlite_sequence SET seq = \(seq) WHERE name = 'poster'", nil, nil, nil)
-        print("writeToPosterBoardDB: registered \(entries.count) descriptor(s) in PosterBoard DB")
+        diag.append("done \(successCount)/\(entries.count) ok")
+        print("writeToPosterBoardDB: registered \(successCount)/\(entries.count) descriptor(s) in PosterBoard DB")
     }
 
     /// Copy files into an absolute directory under an app container via bad_query.
