@@ -135,27 +135,33 @@ class SymHandler {
 
         let dbPath = BadQuery.applicationContainerPath(appHash: appHash)
             + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
-        // Extend the parent directory, not just the DB file: sqlite3_open also needs
-        // access to the -wal and -shm files in the same directory, which a file-only
-        // extension would leave sandboxed.
-        let dbDirPath = (dbPath as NSString).deletingLastPathComponent
 
-        guard let handle = try? BadQuery.consume(path: dbDirPath, create: true) else {
-            print("writeToPosterBoardDB: cannot sandbox-extend DB dir — skipping")
+        // A directory extension only authorises creating new entries inside the dir.
+        // Reading/writing an EXISTING file requires an extension on that file itself
+        // (same pattern as BadQuery.readBundleId which consumes on the file path).
+        // sqlite3 also needs the -wal and -shm files, so extend all three.
+        guard let dbHandle = try? BadQuery.consume(path: dbPath, create: true) else {
+            print("writeToPosterBoardDB: cannot sandbox-extend DB file — skipping")
             return
         }
-        defer { handle.release() }
+        let walHandle = try? BadQuery.consume(path: dbPath + "-wal", create: true)
+        let shmHandle = try? BadQuery.consume(path: dbPath + "-shm", create: true)
+        defer {
+            dbHandle.release()
+            walHandle?.release()
+            shmHandle?.release()
+        }
 
-        // Check existence after the extension is active — the sandbox blocks stat()
-        // on PosterBoard's container without it.
+        // fileExists is now authorised because we hold the file-level extension.
         guard FileManager.default.fileExists(atPath: dbPath) else {
             print("writeToPosterBoardDB: DB not present — skipping")
             return
         }
 
         var db: OpaquePointer?
-        guard sqlite3_open(dbPath, &db) == SQLITE_OK else {
-            print("writeToPosterBoardDB: sqlite3_open failed")
+        // READWRITE only — never create an empty DB at PosterBoard's path.
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+            print("writeToPosterBoardDB: sqlite3_open_v2 failed")
             return
         }
         defer { sqlite3_close(db) }
