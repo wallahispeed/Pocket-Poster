@@ -72,14 +72,27 @@ class SymHandler {
     // MARK: Direct write via bad_query
 
     /// Copy descriptor folders into PosterBoard descriptors using sandbox escape.
-    /// Each descriptor gets a fresh sandbox extension and up to 3 copy attempts
-    /// so a transient token expiry or mid-copy race cannot leave partial folders.
+    ///
+    /// Both ensureDirectory and consume can fail transiently on first call (bad_query
+    /// symbol resolution, kernel rate-limit on extension tokens).  We retry each step
+    /// independently so a single transient failure never surfaces to the caller.
     static func writeDescriptorsViaBadQuery(appHash: String, ext: String, descriptorFolders: [URL]) throws {
         let destPath = BadQuery.descriptorsPath(appHash: appHash, ext: ext)
         print("bad_query writing to \(destPath)")
 
-        // Ensure descriptors directory exists (open parent chain if needed)
-        try BadQuery.ensureDirectory(at: destPath)
+        // Ensure descriptors directory exists — retry up to 3 times
+        var ensureError: Error?
+        for attempt in 0..<3 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.3) }
+            do {
+                try BadQuery.ensureDirectory(at: destPath)
+                ensureError = nil
+                break
+            } catch {
+                ensureError = error
+            }
+        }
+        if let err = ensureError { throw err }
 
         let fm = FileManager.default
         for descr in descriptorFolders {
@@ -93,9 +106,10 @@ class SymHandler {
                     try? fm.removeItem(at: destURL)   // clean up partial copy before retry
                     Thread.sleep(forTimeInterval: 0.3)
                 }
-                let handle = try BadQuery.consume(path: destPath, create: true)
-                defer { handle.release() }
+                // consume is inside do-catch so a bad_query token failure also triggers retry
                 do {
+                    let handle = try BadQuery.consume(path: destPath, create: true)
+                    defer { handle.release() }
                     if fm.fileExists(atPath: destURL.path) {
                         try fm.removeItem(at: destURL)
                     }
