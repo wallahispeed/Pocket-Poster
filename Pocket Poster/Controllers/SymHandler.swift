@@ -523,6 +523,56 @@ class SymHandler {
                     CFNotificationName(name as CFString), nil, nil, true)
             }
             diag.append("posted \(candidates.count) Darwin notification candidates")
+
+            // ── kill posterboardd so launchd restarts it with a fresh DB read ──
+            // posterboardd is a persistent daemon that survives respring — its
+            // in-memory cache stays stale even after we update the DB on disk.
+            // Killing it causes launchd to auto-restart it; on startup it reads
+            // the SQLite DB fresh and picks up our new entries.
+            var pbdPid: pid_t = -1
+            var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+            var procSize = 0
+            sysctl(&mib, u_int(mib.count), nil, &procSize, nil, 0)
+            let procCount = max(0, procSize / MemoryLayout<kinfo_proc>.stride)
+            var procs = [kinfo_proc](repeating: kinfo_proc(), count: procCount)
+            sysctl(&mib, u_int(mib.count), &procs, &procSize, nil, 0)
+            for p in procs {
+                let pname: String = withUnsafePointer(to: p.kp_proc.p_comm) { ptr in
+                    String(cString: UnsafeRawPointer(ptr).assumingMemoryBound(to: CChar.self))
+                }
+                if pname.hasPrefix("posterboard") { pbdPid = p.kp_proc.p_pid; break }
+            }
+            diag.append("posterboardd scan: pid=\(pbdPid)")
+            if pbdPid > 0 {
+                let kr = Darwin.kill(pbdPid, SIGTERM)
+                let ke = Darwin.errno
+                diag.append("kill(SIGTERM) rc=\(kr) errno=\(ke)")
+                if kr == 0 { Thread.sleep(forTimeInterval: 0.8) }
+            }
+
+            // ── WallpaperKit probe: find reload API on PRBPosterExtensionDataStore ──
+            dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
+            for className in ["PRBPosterExtensionDataStore", "PRBPosterDataStoreController",
+                               "PRBCollectionsDataProvider", "PRBPosterDataManager"] {
+                guard let cls = NSClassFromString(className) as? NSObject.Type else {
+                    diag.append("WK \(className): absent"); continue
+                }
+                diag.append("WK found: \(className)")
+                for sharedSel in ["sharedDataStore", "sharedInstance", "defaultDataStore", "sharedManager"] {
+                    guard cls.responds(to: Selector(sharedSel)),
+                          let inst = cls.perform(Selector(sharedSel))?.takeUnretainedValue() as? NSObject
+                    else { continue }
+                    diag.append("WK \(className) instance via \(sharedSel)")
+                    for reloadSel in ["reload", "reloadData", "invalidateCache", "rebuildCollections",
+                                      "reloadFromStorage", "reloadFromDisk", "forceRefresh", "resetCaches"] {
+                        if inst.responds(to: Selector(reloadSel)) {
+                            inst.perform(Selector(reloadSel))
+                            diag.append("WK \(className) called \(reloadSel)")
+                        }
+                    }
+                    break
+                }
+            }
         }
 
         diag.append("=== done didSucceed=\(didSucceed) ===")
