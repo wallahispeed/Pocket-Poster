@@ -635,7 +635,7 @@ class SymHandler {
             if let wkNames = objc_copyClassNamesForImage(wkBinaryPath, &wkImageCount) {
                 var allWKClasses: [String] = []
                 for i in 0..<Int(wkImageCount) {
-                    if let cn = wkNames[i] { allWKClasses.append(String(cString: cn)) }
+                    allWKClasses.append(String(cString: wkNames[i]))
                 }
                 free(UnsafeMutableRawPointer(wkNames))
                 diag.append("WK image total classes: \(allWKClasses.count)")
