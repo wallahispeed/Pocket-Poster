@@ -533,6 +533,12 @@ class SymHandler {
         try? fm.removeItem(atPath: tmpWALPath)
 
         if didSucceed {
+            // Give posterboardd time to detect the new DB file via FSEvents/kqueue.
+            // posterboardd watches its container directory; recreating the DB fires
+            // a DISPATCH_SOURCE_TYPE_VNODE event that should trigger a reload.
+            Thread.sleep(forTimeInterval: 5.0)
+            diag.append("slept 5s post-DB-write (FSEvents trigger window)")
+
             let center = CFNotificationCenterGetDarwinNotifyCenter()
 
             // ── Darwin notification guesses ───────────────────────────────────
@@ -564,7 +570,7 @@ class SymHandler {
                 }
                 if pname.hasPrefix("posterboard") { pbdPid = p.kp_proc.p_pid; break }
             }
-            diag.append("posterboardd pid=\(pbdPid)")
+            diag.append("sysctl procs=\(procCount) posterboardd pid=\(pbdPid)")
             if pbdPid > 0 {
                 let kr1 = Darwin.kill(pbdPid, SIGTERM)
                 let ke1 = Darwin.errno
@@ -619,54 +625,82 @@ class SymHandler {
                 break
             }
 
-            // ── WallpaperKit full class and method enumeration ────────────────
-            // List ALL methods on relevant classes so we have every selector name.
-            // Also try every plausible reload selector on any shared instance found.
+            // ── WallpaperKit: enumerate ALL classes in the image ─────────────
+            // Previous PRB* guesses are all absent in iOS 26.5 — class names changed.
+            // objc_copyClassNamesForImage lists every class defined in the binary,
+            // giving us the actual names rather than guesses.
             dlopen("/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit", RTLD_NOW)
-            for className in ["PRBPosterExtensionDataStore", "PRBPosterDataStoreController",
-                               "PRBCollectionsDataProvider", "PRBPosterDataManager",
-                               "WKPosterDataStore", "WKCollectionsDataSource"] {
-                guard let cls = NSClassFromString(className) as? NSObject.Type else {
-                    diag.append("WK \(className): absent"); continue
+            let wkBinaryPath = "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"
+            var wkImageCount: UInt32 = 0
+            if let wkNames = objc_copyClassNamesForImage(wkBinaryPath, &wkImageCount) {
+                var allWKClasses: [String] = []
+                for i in 0..<Int(wkImageCount) {
+                    if let cn = wkNames[i] { allWKClasses.append(String(cString: cn)) }
                 }
-                diag.append("WK found: \(className)")
-                var cnt: UInt32 = 0
-                if let ms = class_copyMethodList(object_getClass(cls), &cnt) {
-                    var names: [String] = []
-                    for i in 0..<Int(cnt) { names.append(NSStringFromSelector(method_getName(ms[i]))) }
-                    diag.append("WK \(className) +[\(names.joined(separator: ","))]")
+                free(UnsafeMutableRawPointer(wkNames))
+                diag.append("WK image total classes: \(allWKClasses.count)")
+                // Log all class names so we know what's in WallpaperKit on iOS 26.5
+                diag.append("WK all: \(allWKClasses.joined(separator: ","))")
+                // Filter for anything poster/wallpaper/collection related
+                let posterRelated = allWKClasses.filter { n in
+                    let l = n.lowercased()
+                    return l.contains("poster") || l.contains("wallpaper") ||
+                           l.contains("collect") || l.contains("datastore") ||
+                           l.contains("prb") || l.contains("wkp")
                 }
-                cnt = 0
-                if let ms = class_copyMethodList(cls, &cnt) {
-                    var names: [String] = []
-                    for i in 0..<Int(cnt) { names.append(NSStringFromSelector(method_getName(ms[i]))) }
-                    diag.append("WK \(className) -[\(names.joined(separator: ","))]")
-                }
-                for sharedSel in ["sharedDataStore", "sharedInstance", "defaultDataStore",
-                                   "sharedManager", "defaultStore"] {
-                    guard cls.responds(to: Selector(sharedSel)),
-                          let inst = cls.perform(Selector(sharedSel))?.takeUnretainedValue() as? NSObject
-                    else { continue }
-                    diag.append("WK \(className) instance via \(sharedSel)")
-                    for reloadSel in ["reload", "reloadData", "invalidateCache", "rebuildCollections",
-                                      "reloadFromStorage", "reloadFromDisk", "forceRefresh", "resetCaches",
-                                      "reloadPosterData", "refreshPosterData", "loadData", "fetchData",
-                                      "reloadExtensionData", "refreshExtensionData", "reloadAllData", "reset"] {
-                        if inst.responds(to: Selector(reloadSel)) {
-                            inst.perform(Selector(reloadSel))
-                            diag.append("WK \(className) called \(reloadSel)")
-                        }
+                diag.append("WK poster-related[\(posterRelated.count)]: \(posterRelated.joined(separator: ","))")
+                // For each found class, list methods and try reload selectors
+                for className in posterRelated {
+                    guard let cls = NSClassFromString(className) as? NSObject.Type else { continue }
+                    var cnt: UInt32 = 0
+                    if let ms = class_copyMethodList(object_getClass(cls), &cnt) {
+                        var names: [String] = []
+                        for i in 0..<Int(cnt) { names.append(NSStringFromSelector(method_getName(ms[i]))) }
+                        diag.append("WK \(className) +[\(names.joined(separator: ","))]")
+                        free(UnsafeMutableRawPointer(ms))
                     }
-                    break
+                    cnt = 0
+                    if let ms = class_copyMethodList(cls, &cnt) {
+                        var names: [String] = []
+                        for i in 0..<Int(cnt) { names.append(NSStringFromSelector(method_getName(ms[i]))) }
+                        diag.append("WK \(className) -[\(names.joined(separator: ","))]")
+                        free(UnsafeMutableRawPointer(ms))
+                    }
+                    for sharedSel in ["sharedDataStore", "sharedInstance", "defaultDataStore",
+                                       "sharedManager", "defaultStore", "sharedController",
+                                       "sharedProvider", "shared"] {
+                        guard cls.responds(to: Selector(sharedSel)),
+                              let inst = cls.perform(Selector(sharedSel))?.takeUnretainedValue() as? NSObject
+                        else { continue }
+                        diag.append("WK \(className) instance via \(sharedSel)")
+                        for reloadSel in ["reload", "reloadData", "invalidateCache", "rebuildCollections",
+                                          "reloadFromStorage", "reloadFromDisk", "forceRefresh", "resetCaches",
+                                          "reloadPosterData", "refreshPosterData", "loadData", "fetchData",
+                                          "reloadExtensionData", "refreshExtensionData", "reloadAllData", "reset"] {
+                            if inst.responds(to: Selector(reloadSel)) {
+                                inst.perform(Selector(reloadSel))
+                                diag.append("WK \(className) called \(reloadSel)")
+                            }
+                        }
+                        break
+                    }
                 }
+            } else {
+                diag.append("WK objc_copyClassNamesForImage: returned nil")
             }
 
             // ── openPosterBoard as final trigger ──────────────────────────────
-            // Forces PosterBoard app to launch and refresh from posterboardd.
+            // PosterBoard scans descriptor folders and updates posterboardd when it
+            // launches. The scan is async — sleep 5s after opening to let it finish
+            // before respring, otherwise it races with SpringBoard shutdown.
             if let wsCls = objc_getClass("LSApplicationWorkspace") as? NSObject.Type,
                let ws = wsCls.perform(Selector(("defaultWorkspace")))?.takeUnretainedValue() as? NSObject {
                 let opened = ws.perform(Selector(("openApplicationWithBundleID:")), with: "com.apple.PosterBoard") != nil
                 diag.append("openPosterBoard: \(opened)")
+                if opened {
+                    Thread.sleep(forTimeInterval: 5.0)
+                    diag.append("slept 5s post-openPosterBoard (scan window)")
+                }
             }
         }
 
