@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import SQLite3
 
 class SymHandler {
     // MARK: URL Getter Operations
@@ -72,11 +73,9 @@ class SymHandler {
     // MARK: Direct write via bad_query
 
     /// Copy descriptor folders into PosterBoard descriptors using sandbox escape.
-    ///
-    /// Both ensureDirectory and consume can fail transiently on first call (bad_query
-    /// symbol resolution, kernel rate-limit on extension tokens).  We retry each step
-    /// independently so a single transient failure never surfaces to the caller.
-    static func writeDescriptorsViaBadQuery(appHash: String, ext: String, descriptorFolders: [URL]) throws {
+    /// Returns the UUID folder names that were written (used by writeToPosterBoardDB).
+    @discardableResult
+    static func writeDescriptorsViaBadQuery(appHash: String, ext: String, descriptorFolders: [URL]) throws -> [String] {
         let destPath = BadQuery.descriptorsPath(appHash: appHash, ext: ext)
         print("bad_query writing to \(destPath)")
 
@@ -95,6 +94,7 @@ class SymHandler {
         if let err = ensureError { throw err }
 
         let fm = FileManager.default
+        var writtenUUIDs: [String] = []
         for descr in descriptorFolders {
             guard descr.lastPathComponent != "__MACOSX" else { continue }
             let destName = UUID().uuidString
@@ -121,7 +121,100 @@ class SymHandler {
                 }
             }
             if let err = lastError { throw err }
+            writtenUUIDs.append(destName)
         }
+        return writtenUUIDs
+    }
+
+    /// Register wallpaper descriptors in PosterBoard's SQLite database so they
+    /// appear in the collections picker immediately after the first respring.
+    /// Without this, PosterBoard ignores newly written descriptor folders until
+    /// it performs its own async rescan (which may take several relaunches).
+    static func writeToPosterBoardDB(appHash: String, entries: [(uuid: String, ext: String)]) {
+        guard !entries.isEmpty else { return }
+
+        let dbPath = BadQuery.applicationContainerPath(appHash: appHash)
+            + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
+        let dbURL = URL(fileURLWithPath: dbPath)
+        let dbDirPath = (dbPath as NSString).deletingLastPathComponent
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pp_pb_\(UUID().uuidString).sqlite3")
+
+        // Get sandbox extension for the DB's parent directory
+        guard let dirHandle = try? BadQuery.consume(path: dbDirPath, create: true) else {
+            print("writeToPosterBoardDB: cannot sandbox-extend DB dir — skipping")
+            return
+        }
+
+        // Copy the DB to our temp directory
+        // Clean container = no DB yet; PosterBoard will create and auto-scan on first launch
+        guard FileManager.default.fileExists(atPath: dbPath),
+              (try? FileManager.default.copyItem(at: dbURL, to: tempURL)) != nil else {
+            dirHandle.release()
+            print("writeToPosterBoardDB: DB not present (clean container) — PosterBoard will auto-scan")
+            return
+        }
+        dirHandle.release()
+
+        // Open and modify the temp copy with SQLite
+        var db: OpaquePointer?
+        guard sqlite3_open(tempURL.path, &db) == SQLITE_OK else {
+            print("writeToPosterBoardDB: sqlite3_open failed")
+            try? FileManager.default.removeItem(at: tempURL)
+            return
+        }
+
+        var stmt: OpaquePointer?
+
+        // Get current poster sequence counter
+        var seq: Int64 = 0
+        if sqlite3_prepare_v2(db, "SELECT seq FROM sqlite_sequence WHERE name = 'poster'", -1, &stmt, nil) == SQLITE_OK,
+           sqlite3_step(stmt) == SQLITE_ROW {
+            seq = sqlite3_column_int64(stmt, 0)
+        }
+        sqlite3_finalize(stmt); stmt = nil
+
+        // Get current max roleSortKey for lock screen role
+        var maxSortKey: Int64 = seq
+        if sqlite3_prepare_v2(db, "SELECT MAX(roleSortKey) FROM posterRoleMembership WHERE roleId = 'PRPosterRoleLockScreen'", -1, &stmt, nil) == SQLITE_OK,
+           sqlite3_step(stmt) == SQLITE_ROW,
+           sqlite3_column_type(stmt, 0) != SQLITE_NULL {
+            maxSortKey = sqlite3_column_int64(stmt, 0)
+        }
+        sqlite3_finalize(stmt); stmt = nil
+
+        let now = Date().timeIntervalSince1970
+        for entry in entries {
+            seq += 1
+            maxSortKey += 1
+            // Payload format matches Nugget's PRPosterRoleAttributeTypeUsageMetadata payload
+            let payload = "{\"creationDate\":\(now),\"extensionAvailable\":true,\"attributeType\":\"PRPosterRoleAttributeTypeUsageMetadata\",\"lastActivatedDate\":\(now + 0.001),\"lastSelectedDate\":\(now + 0.0001)}"
+            sqlite3_exec(db, "INSERT OR IGNORE INTO poster (posterId, UUID, providerId) VALUES (\(seq), '\(entry.uuid)', '\(entry.ext)')", nil, nil, nil)
+            sqlite3_exec(db, "INSERT OR IGNORE INTO posterAttributes (posterUUID, roleId, attributeIdentifier, attributePayload) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', 'PRPosterRoleAttributeTypeUsageMetadata', '\(payload)')", nil, nil, nil)
+            sqlite3_exec(db, "INSERT OR IGNORE INTO posterRoleMembership (posterUUID, roleId, roleSortKey) VALUES ('\(entry.uuid)', 'PRPosterRoleLockScreen', \(maxSortKey))", nil, nil, nil)
+        }
+        sqlite3_exec(db, "UPDATE sqlite_sequence SET seq = \(seq) WHERE name = 'poster'", nil, nil, nil)
+        sqlite3_close(db)
+
+        // Write modified DB back to PosterBoard's container
+        guard let writeHandle = try? BadQuery.consume(path: dbDirPath, create: true) else {
+            print("writeToPosterBoardDB: cannot get write extension — DB changes lost")
+            try? FileManager.default.removeItem(at: tempURL)
+            return
+        }
+        do {
+            try FileManager.default.removeItem(at: dbURL)
+            try FileManager.default.copyItem(at: tempURL, to: dbURL)
+            // Remove WAL/SHM so PosterBoard reads our updated main DB on next launch
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: dbPath + "-wal"))
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: dbPath + "-shm"))
+            print("writeToPosterBoardDB: registered \(entries.count) descriptor(s) in PosterBoard DB")
+        } catch {
+            print("writeToPosterBoardDB: write-back failed: \(error)")
+        }
+        writeHandle.release()
+        try? FileManager.default.removeItem(at: tempURL)
     }
 
     /// Copy files into an absolute directory under an app container via bad_query.
