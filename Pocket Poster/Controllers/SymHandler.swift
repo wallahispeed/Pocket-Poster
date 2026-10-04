@@ -7,6 +7,7 @@
 
 import Foundation
 import SQLite3
+import Darwin
 
 class SymHandler {
     // MARK: URL Getter Operations
@@ -207,17 +208,41 @@ class SymHandler {
         }
         walReadHandle?.release()
 
+        // --- Deep diagnostics before attempting open ---
+        diag.append("tmpDBPath=\(tmpDBPath)")
+        if let attrs = try? fm.attributesOfItem(atPath: tmpDBPath) {
+            diag.append("size=\(attrs[.size] ?? "?")")
+        }
+        // Read first 20 bytes to check SQLite header magic and WAL mode bytes 18-19
+        if let data = fm.contents(atPath: tmpDBPath), data.count >= 20 {
+            diag.append("header: \(data.prefix(16).map { String(format:"%02x",$0) }.joined()) WAL_bytes=\(data[18]) \(data[19])")
+        }
+        // Direct POSIX open test — bypasses SQLite, tests raw kernel access
+        let posixFd = Darwin.open(tmpDBPath, O_RDWR)
+        let posixErrno = Darwin.errno
+        diag.append("posix O_RDWR fd=\(posixFd) errno=\(posixErrno)")
+        if posixFd >= 0 { Darwin.close(posixFd) }
+        // Can SQLite create ANY new file in the same directory?
+        let freshPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("pp_fresh_test.sqlite3")
+        var freshDb: OpaquePointer?
+        let freshRC = sqlite3_open_v2(freshPath, &freshDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+        diag.append("fresh DB test rc=\(freshRC)")
+        if freshRC == SQLITE_OK { sqlite3_close(freshDb) }
+        try? fm.removeItem(atPath: freshPath)
         // --- 2. Open our copy and insert rows ---
         var db: OpaquePointer?
         let openRC = sqlite3_open_v2(tmpDBPath, &db, SQLITE_OPEN_READWRITE, nil)
-        diag.append("open copy rc=\(openRC)")
-        if openRC != SQLITE_OK, let db = db {
-            diag.append("errmsg=\(String(cString: sqlite3_errmsg(db)))")
-            diag.append("extended_rc=\(sqlite3_extended_errcode(db))")
-            sqlite3_close(db)
+        let openErrno = Darwin.errno
+        diag.append("open copy rc=\(openRC) errno=\(openErrno)")
+        if openRC != SQLITE_OK {
+            if let db = db {
+                sqlite3_extended_result_codes(db, 1)
+                diag.append("errmsg=\(String(cString: sqlite3_errmsg(db)))")
+                diag.append("extended_rc=\(sqlite3_extended_errcode(db))")
+                sqlite3_close(db)
+            }
             return
         }
-        guard openRC == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
 
         sqlite3_busy_timeout(db, 3000)
