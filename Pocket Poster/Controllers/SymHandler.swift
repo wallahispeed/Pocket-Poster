@@ -158,6 +158,31 @@ class SymHandler {
         }
 
         let fm = FileManager.default
+
+        // ── pre-run: inspect PB's DB BEFORE we touch anything ────────────────
+        // This tells us whether the previous apply's DB modification survived the respring.
+        if let h = try? BadQuery.consume(path: dbPath, create: true) {
+            defer { h.release() }
+            if let attrs = try? fm.attributesOfItem(atPath: dbPath) {
+                let sz = attrs[.size] as? Int ?? -1
+                diag.append("pre-run PB DB size=\(sz)")
+            } else {
+                diag.append("pre-run PB DB: not found / stat failed")
+            }
+            // Search raw bytes for each entry UUID from the previous run to check survival
+            if let data = fm.contents(atPath: dbPath) {
+                let raw = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
+                for entry in entries {
+                    let found = raw.contains(entry.uuid) || (data.withUnsafeBytes { buf in
+                        buf.windows(ofCount: entry.uuid.utf8.count).contains { $0.elementsEqual(entry.uuid.utf8) }
+                    })
+                    diag.append("pre-run uuid \(entry.uuid.prefix(8)) in DB raw bytes: \(found)")
+                }
+            } else {
+                diag.append("pre-run: fm.contents(dbPath) = nil")
+            }
+        }
+
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
 
@@ -280,9 +305,58 @@ class SymHandler {
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        // APPROACH A — open copy WITHOUT WAL (WAL may put sqlite3 into recovery)
+        // APPROACH DIRECT — delete PB's DB files using dir extension, then call
+        // sqlite3_open_v2(dbPath, CREATE) directly at PB's path.
+        // Hypothesis: POSIX O_CREAT on a non-existent path may work (while O_RDWR
+        // on an existing file fails with EISDIR in LiveContainer).  No copy needed.
         // ══════════════════════════════════════════════════════════════════════
         var didSucceed = false
+
+        if let dirHandle = try? BadQuery.consume(path: dbDir, create: true) {
+            // Delete existing DB/WAL/SHM so dbPath does not exist
+            try? fm.removeItem(atPath: walPath)
+            try? fm.removeItem(atPath: shmPath)
+            try? fm.removeItem(atPath: dbPath)
+
+            // Test: can POSIX create a new file directly in PB's container?
+            let posPBFd = Darwin.open(dbPath, O_CREAT | O_WRONLY, 0o644)
+            let posPBErr = Darwin.errno
+            diag.append("[Direct] POSIX O_CREAT in PB dir: fd=\(posPBFd) errno=\(posPBErr)")
+            if posPBFd >= 0 {
+                Darwin.close(posPBFd)
+                try? fm.removeItem(atPath: dbPath) // remove the test stub before SQLite creates it
+            }
+
+            // Try creating SQLite DB directly at PB's path
+            var db: OpaquePointer?
+            let rc = sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil)
+            let err = Darwin.errno
+            diag.append("[Direct] sqlite3_open CREATE at PB path: rc=\(rc) errno=\(err)")
+            if rc == SQLITE_OK, let db = db {
+                sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS poster (posterId INTEGER, UUID TEXT NOT NULL, providerId TEXT NOT NULL)", nil, nil, nil)
+                sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS posterAttributes (posterUUID TEXT NOT NULL, roleId TEXT NOT NULL, attributeIdentifier TEXT NOT NULL, attributePayload TEXT)", nil, nil, nil)
+                sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS posterRoleMembership (posterUUID TEXT NOT NULL, roleId TEXT NOT NULL, roleSortKey INTEGER)", nil, nil, nil)
+                var seq: Int64 = 0; var sk: Int64 = 0
+                let n = insertEntries(db: db, seq: &seq, maxSortKey: &sk, src: "Direct")
+                sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil)
+                sqlite3_close(db)
+                diag.append("[Direct] inserted \(n)/\(entries.count)")
+                if n > 0 {
+                    didSucceed = true
+                    diag.append("[Direct] SUCCESS — DB created directly at PB path")
+                }
+            } else {
+                if let db = db { sqlite3_close(db) }
+                // Direct failed — DB may be deleted; approaches below will re-copy or re-create via tmp
+            }
+            dirHandle.release()
+        } else {
+            diag.append("[Direct] FAIL consume dbDir")
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // APPROACH A — open copy WITHOUT WAL (WAL may put sqlite3 into recovery)
+        // ══════════════════════════════════════════════════════════════════════
 
         do {
             try? fm.removeItem(atPath: tmpWALPath)      // skip WAL on first try
@@ -433,6 +507,27 @@ class SymHandler {
 
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
+
+        // ── post Darwin notifications to trigger PB rescan ───────────────────
+        // Fire-and-forget; wrong names are a no-op. Right name = PB rescans
+        // and shows our wallpaper without waiting for the next respring.
+        if didSucceed {
+            let center = CFNotificationCenterGetDarwinNotifyCenter()
+            let candidates: [String] = [
+                "com.apple.springboard.posterboard.wallpapersDidChange",
+                "com.apple.UIPosterBoard.wallpapersChanged",
+                "com.apple.posterboard.newPosterAvailable",
+                "com.apple.posterboardd.posterDataChanged",
+                "PRBPosterExtensionDataStoreChanged",
+                "com.apple.posterboard.reload",
+            ]
+            for name in candidates {
+                CFNotificationCenterPostNotification(center,
+                    CFNotificationName(name as CFString), nil, nil, true)
+            }
+            diag.append("posted \(candidates.count) Darwin notification candidates")
+        }
+
         diag.append("=== done didSucceed=\(didSucceed) ===")
         print("writeToPosterBoardDB: done didSucceed=\(didSucceed)")
     }
