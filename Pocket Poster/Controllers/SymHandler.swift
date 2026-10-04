@@ -394,24 +394,6 @@ class SymHandler {
                 let gcFilePath = "\(galleryCachePath)/\(gcFile)"
                 guard let gcData = fm.contents(atPath: gcFilePath) else { continue }
                 diag.append("GalleryCacheFile \(gcFile): \(gcData.count)b")
-                do {
-                    let u = try NSKeyedUnarchiver(forReadingFrom: gcData)
-                    u.requiresSecureCoding = false
-                    if let decoded = u.decodeObject(forKey: NSKeyedArchiveRootObjectKey) as? NSObject {
-                        let desc = decoded.description
-                        diag.append("  unarchType=\(type(of: decoded))")
-                        for chunk in stride(from: 0, to: min(desc.count, 3000), by: 300) {
-                            let s = desc.index(desc.startIndex, offsetBy: chunk)
-                            let e = desc.index(s, offsetBy: min(300, desc.count - chunk))
-                            diag.append("  desc[\(chunk)]: \(desc[s..<e])")
-                        }
-                    } else {
-                        diag.append("  unarchived=nil")
-                    }
-                    u.finishDecoding()
-                } catch {
-                    diag.append("  unarchErr: \(error)")
-                }
                 if let gcPlist = try? PropertyListSerialization.propertyList(from: gcData, options: [], format: nil) {
                     func extractStrs(_ v: Any) -> [String] {
                         if let s = v as? String, s.count >= 6 { return [s] }
