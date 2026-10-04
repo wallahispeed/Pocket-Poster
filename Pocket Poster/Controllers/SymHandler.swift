@@ -444,6 +444,24 @@ class SymHandler {
             diag.append("GalleryCache: not accessible")
         }
 
+        // ── Delete GalleryCache so PB rescans Extensions/ on next launch ────────
+        // PB caches its collection list; if the cache is fresh, it won't discover
+        // new descriptor folders until its background rescan fires (~1-2 min).
+        // Deleting the cache forces a full filesystem scan immediately on restart.
+        let gcDeletePath = BadQuery.applicationContainerPath(appHash: appHash) +
+            "/Library/Application Support/PRBPosterExtensionDataStore/61/GalleryCache"
+        if let gcDelH = try? BadQuery.consume(path: gcDeletePath, create: true) {
+            defer { gcDelH.release() }
+            let gcFiles = (try? fm.contentsOfDirectory(atPath: gcDeletePath)) ?? []
+            var gcDelCount = 0
+            for f in gcFiles where !f.hasPrefix(".") {
+                if (try? fm.removeItem(atPath: "\(gcDeletePath)/\(f)")) != nil { gcDelCount += 1 }
+            }
+            diag.append("GalleryCache cleared: \(gcDelCount)/\(gcFiles.count)")
+        } else {
+            diag.append("GalleryCache: no access for deletion")
+        }
+
         try? fm.removeItem(atPath: tmpDBPath)
         try? fm.removeItem(atPath: tmpWALPath)
 
