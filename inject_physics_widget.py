@@ -206,7 +206,7 @@ ext_configs = f"""
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSDKROOT = iphoneos;
 \t\t\t\tSKIP_INSTALL = YES;
-\t\t\t\tSWIFT_VERSION = 6.0;
+\t\t\t\tSWIFT_VERSION = 5.0;
 \t\t\t\tTARGETED_DEVICE_FAMILY = "1,2";
 \t\t\t}};
 \t\t\tname = Debug;
@@ -225,7 +225,7 @@ ext_configs = f"""
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSDKROOT = iphoneos;
 \t\t\t\tSKIP_INSTALL = YES;
-\t\t\t\tSWIFT_VERSION = 6.0;
+\t\t\t\tSWIFT_VERSION = 5.0;
 \t\t\t\tTARGETED_DEVICE_FAMILY = "1,2";
 \t\t\t}};
 \t\t\tname = Release;
