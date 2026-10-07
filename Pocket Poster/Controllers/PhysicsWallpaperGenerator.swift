@@ -4,111 +4,70 @@
 //
 
 import Foundation
-import SpriteKit
-import Metal
 import AVFoundation
 import CoreVideo
+import CoreGraphics
 import UIKit
 
 enum PhysicsWallpaperGenerator {
 
     // MARK: - Public
 
-    /// Build the SpriteKit scene on the main thread.
-    static func buildScene() -> SKScene {
-        let size = CGSize(width: 393, height: 852) // iPhone 16 Pro logical points
-        let scene = SKScene(size: size)
-        scene.backgroundColor = .black
-        scene.physicsWorld.gravity = CGVector(dx: 0, dy: -9.8)
-        scene.physicsWorld.speed = 1.0
+    /// Render physics frames, encode video, build CAML descriptor, apply via bad_query.
+    /// Call on a background thread. `onChange` fires on main thread.
+    static func apply(appHash: String, onChange: @escaping (String) -> Void) throws {
+        DispatchQueue.main.async { onChange("Rendering physics frames (0%)…") }
 
-        let walls = SKNode()
-        walls.physicsBody = SKPhysicsBody(edgeLoopFrom: CGRect(origin: .zero, size: size))
-        walls.physicsBody?.restitution = 0.5
-        walls.physicsBody?.friction = 0.1
-        scene.addChild(walls)
-
-        let colors: [UIColor] = [
-            .systemRed, .systemOrange, .systemYellow, .systemGreen,
-            .cyan, .systemBlue, .systemIndigo, .systemPurple,
-            .systemPink, .white
-        ]
-        let radius: CGFloat = 16
-
-        for i in 0..<40 {
-            let ball = SKShapeNode(circleOfRadius: radius)
-            ball.fillColor = colors[i % colors.count]
-            ball.strokeColor = .clear
-            ball.glowWidth = 0
-
-            let body = SKPhysicsBody(circleOfRadius: radius)
-            body.restitution = CGFloat.random(in: 0.55...0.85)
-            body.friction = 0.05
-            body.linearDamping = 0
-            body.angularDamping = 0.05
-
-            let x = radius + CGFloat(i) / 40.0 * (size.width - 2 * radius)
-            let y = CGFloat.random(in: 200...700)
-            ball.position = CGPoint(x: x, y: y)
-            ball.physicsBody = body
-            scene.addChild(ball)
-        }
-
-        return scene
-    }
-
-    /// Render frames, encode video, build CAML descriptor, apply via bad_query.
-    /// Call on a background thread. `onChange` is dispatched to main thread.
-    static func apply(scene: SKScene, appHash: String, onChange: @escaping (String) -> Void) throws {
-        // 1. Render physics to .mp4
-        onChange("Rendering physics frames (0%)…")
-        let videoURL = try renderVideo(scene: scene, onChange: onChange)
+        let videoURL = try renderVideo(onChange: onChange)
         defer { try? FileManager.default.removeItem(at: videoURL) }
 
-        // 2. Build CAML descriptor from video (reuses Pocket Poster's existing pipeline)
         DispatchQueue.main.async { UIApplication.shared.change(title: "Physics Wallpaper", body: "Building CAML descriptor…") }
         let descriptorURL = try VideoHandler.createCaml(from: videoURL, autoReverses: true)
 
-        // 3. Apply the descriptor via bad_query (or legacy symlink)
         DispatchQueue.main.async { UIApplication.shared.change(title: "Physics Wallpaper", body: "Applying descriptor…") }
         try applyDescriptor(appHash: appHash, descriptorURL: descriptorURL)
 
         DispatchQueue.main.async { UIApplication.shared.change(title: "Physics Wallpaper", body: "Done — respinging…") }
     }
 
-    // MARK: - Video rendering
+    // MARK: - Video rendering (manual physics + Core Graphics — no SKRenderer/Metal dependency)
 
-    private static func renderVideo(scene: SKScene, onChange: @escaping (String) -> Void) throws -> URL {
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let queue = device.makeCommandQueue() else {
-            throw NSError(domain: "PhysicsWallpaper", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "Metal unavailable on this device"])
+    private static func renderVideo(onChange: @escaping (String) -> Void) throws -> URL {
+        let fps: Double = 30
+        let duration: Double = 8
+        let totalFrames = Int(fps * duration)   // 240
+        let dt: CGFloat = CGFloat(1.0 / fps)
+
+        // iPhone 16 Pro logical-point resolution
+        let w = 393
+        let h = 852
+
+        // ── Ball physics state ──────────────────────────────────────────
+        let count = 40
+        let radius: CGFloat = 16
+        let gravityY: CGFloat = -400   // pts/s² — visually satisfying on 852pt screen
+        let restitution: CGFloat = 0.75
+
+        let colors: [UIColor] = [
+            .systemRed, .systemOrange, .systemYellow, .systemGreen,
+            .cyan, .systemBlue, .systemIndigo, .systemPurple,
+            .systemPink, .white
+        ]
+        let cgColors = colors.map { $0.cgColor }
+
+        var posX = [CGFloat](repeating: 0, count: count)
+        var posY = [CGFloat](repeating: 0, count: count)
+        var velX = [CGFloat](repeating: 0, count: count)
+        var velY = [CGFloat](repeating: 0, count: count)
+
+        for i in 0..<count {
+            posX[i] = radius + CGFloat(i) / CGFloat(count) * (CGFloat(w) - 2 * radius)
+            posY[i] = CGFloat.random(in: 150...700)
+            velX[i] = CGFloat.random(in: -200...200)
+            velY[i] = CGFloat.random(in: -50...150)
         }
 
-        let renderer = SKRenderer(device: device)
-        renderer.scene = scene
-
-        let w = Int(scene.size.width), h = Int(scene.size.height)
-
-        let texDesc = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
-        texDesc.usage = [.renderTarget, .shaderRead]
-        guard let tex = device.makeTexture(descriptor: texDesc) else {
-            throw NSError(domain: "PhysicsWallpaper", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "Could not allocate Metal texture"])
-        }
-
-        let rPass = MTLRenderPassDescriptor()
-        rPass.colorAttachments[0].texture = tex
-        rPass.colorAttachments[0].loadAction = .clear
-        rPass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
-        rPass.colorAttachments[0].storeAction = .store
-
-        let fps = 30.0
-        let duration = 8.0
-        let totalFrames = Int(fps * duration)
-        let viewport = CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h))
-
+        // ── AVAssetWriter ───────────────────────────────────────────────
         let videoURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("physics_\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: videoURL)
@@ -133,39 +92,77 @@ enum PhysicsWallpaperGenerator {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo: UInt32 = CGImageAlphaInfo.premultipliedFirst.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+
+        // ── Render loop ─────────────────────────────────────────────────
         for f in 0..<totalFrames {
-            let t = Double(f) / fps
+            // Step physics — skip on frame 0 (render initial state first)
+            if f > 0 {
+                for i in 0..<count {
+                    velY[i] += gravityY * dt
+                    posX[i] += velX[i] * dt
+                    posY[i] += velY[i] * dt
 
-            guard let cmd = queue.makeCommandBuffer() else { continue }
-            renderer.update(atTime: t)
-            renderer.render(withViewport: viewport, commandBuffer: cmd, renderPassDescriptor: rPass)
-            cmd.commit()
-            cmd.waitUntilCompleted()
+                    // Left/right walls
+                    if posX[i] - radius < 0 {
+                        posX[i] = radius
+                        velX[i] = abs(velX[i]) * restitution
+                    } else if posX[i] + radius > CGFloat(w) {
+                        posX[i] = CGFloat(w) - radius
+                        velX[i] = -abs(velX[i]) * restitution
+                    }
+                    // Floor (posY=0 is bottom in SpriteKit-style coords) / ceiling
+                    if posY[i] - radius < 0 {
+                        posY[i] = radius
+                        velY[i] = abs(velY[i]) * restitution
+                    } else if posY[i] + radius > CGFloat(h) {
+                        posY[i] = CGFloat(h) - radius
+                        velY[i] = -abs(velY[i]) * restitution
+                    }
+                }
+            }
 
-            // Metal texture → CVPixelBuffer (nil attrs = default memory backing)
+            // Draw frame into CVPixelBuffer via Core Graphics
             var pb: CVPixelBuffer?
             CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA, nil, &pb)
-            if let pb = pb {
-                CVPixelBufferLockBaseAddress(pb, [])
-                if let base = CVPixelBufferGetBaseAddress(pb) {
-                    let bytesPerRow = CVPixelBufferGetBytesPerRow(pb)
-                    tex.getBytes(base, bytesPerRow: bytesPerRow,
-                                 from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
-                }
-                CVPixelBufferUnlockBaseAddress(pb, [])
+            guard let pb = pb else { continue }
 
-                let pts = CMTime(value: CMTimeValue(f), timescale: CMTimeScale(fps))
-                while !videoInput.isReadyForMoreMediaData {
-                    Thread.sleep(forTimeInterval: 0.002)
+            CVPixelBufferLockBaseAddress(pb, [])
+            if let ctx = CGContext(
+                data: CVPixelBufferGetBaseAddress(pb),
+                width: w, height: h,
+                bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(pb),
+                space: colorSpace,
+                bitmapInfo: bitmapInfo
+            ) {
+                // Black background
+                ctx.setFillColor(UIColor.black.cgColor)
+                ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+
+                // Draw balls — Core Graphics origin is top-left, our physics is y-up
+                for i in 0..<count {
+                    let cgY = CGFloat(h) - posY[i]   // flip y
+                    ctx.setFillColor(cgColors[i % cgColors.count])
+                    ctx.fillEllipse(in: CGRect(
+                        x: posX[i] - radius, y: cgY - radius,
+                        width: radius * 2, height: radius * 2
+                    ))
                 }
-                adaptor.append(pb, withPresentationTime: pts)
             }
+            CVPixelBufferUnlockBaseAddress(pb, [])
+
+            let pts = CMTime(value: CMTimeValue(f), timescale: CMTimeScale(fps))
+            while !videoInput.isReadyForMoreMediaData { Thread.sleep(forTimeInterval: 0.002) }
+            adaptor.append(pb, withPresentationTime: pts)
 
             if f % 15 == 0 {
                 let pct = Int(Double(f + 1) / Double(totalFrames) * 100)
                 DispatchQueue.main.async {
                     UIApplication.shared.change(title: "Physics Wallpaper",
-                                                body: "Rendering physics frames (\(pct)%)…")
+                                                body: "Rendering frames (\(pct)%)…")
                 }
             }
         }
@@ -187,8 +184,7 @@ enum PhysicsWallpaperGenerator {
     private static func applyDescriptor(appHash: String, descriptorURL: URL) throws {
         let ext = "com.apple.WallpaperKit.CollectionsPoster"
 
-        // createCaml returns a parent directory containing the actual descriptor folder(s).
-        // Mirror applyTendies: enumerate contents and pass the real descriptor folder.
+        // createCaml returns a parent directory; enumerate to get the actual descriptor folder(s)
         let foldersToWrite = try FileManager.default.contentsOfDirectory(
             at: descriptorURL, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
             .filter { $0.lastPathComponent != "__MACOSX" }

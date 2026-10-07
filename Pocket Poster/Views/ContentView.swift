@@ -108,7 +108,6 @@ struct ContentView: View {
                             Button(action: {
                                 UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                                 UIApplication.shared.alert(title: "Physics Wallpaper", body: "Starting…", animated: false, withButton: false)
-                                let scene = PhysicsWallpaperGenerator.buildScene()
                                 DispatchQueue.global(qos: .userInitiated).async {
                                     do {
                                         var hash = pbHash
@@ -119,7 +118,7 @@ struct ContentView: View {
                                             hash = try BadQuery.findPosterBoardHash()
                                             DispatchQueue.main.async { pbHash = hash }
                                         }
-                                        try PhysicsWallpaperGenerator.apply(scene: scene, appHash: hash) { msg in
+                                        try PhysicsWallpaperGenerator.apply(appHash: hash) { msg in
                                             UIApplication.shared.change(title: "Physics Wallpaper", body: msg)
                                         }
                                         DispatchQueue.main.async {
