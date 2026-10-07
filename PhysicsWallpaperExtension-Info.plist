@@ -23,6 +23,13 @@
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.widgetkit-extension</string>
     </dict>
+    <!-- Candidate keys for SpringBoard to honor wantsLiveScene without LiveSceneWidgetConfiguration -->
+    <key>WKExtensionWantsLiveScene</key>
+    <true/>
+    <key>WKWidgetWantsLiveScene</key>
+    <true/>
+    <key>CHSWidgetWantsLiveScene</key>
+    <true/>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>

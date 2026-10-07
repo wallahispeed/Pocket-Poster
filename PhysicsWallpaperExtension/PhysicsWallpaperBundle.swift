@@ -1,11 +1,6 @@
 import WidgetKit
 import SwiftUI
 
-// LiveSceneWidgetConfiguration exists in WidgetKit.framework at runtime
-// but is not exported in the public SDK module interface.
-// We use StaticConfiguration as the declared type and patch the CHS
-// descriptor directly via ObjC runtime in WallpaperBootstrap.swift.
-
 struct _EmptyEntry: TimelineEntry { let date = Date() }
 
 struct _EmptyProvider: TimelineProvider {
@@ -21,14 +16,17 @@ struct PhysicsWallpaperBundle: Widget {
     let kind = "com.mak5er.Pocket-Poster.physics-wallpaper"
 
     init() {
-        // Patch CHSMutableWidgetDescriptor.setKind: before WidgetKit
-        // processes our configuration, so wantsLiveScene is set to YES.
+        // Runs in the extension process when WidgetKit loads the extension.
+        // install() attempts to:
+        //   1. dlopen HomeBoard/CoreHomeScreen and patch CHSMutableWidgetDescriptor.setKind:
+        //   2. Enumerate WidgetKit classes looking for LiveSceneWidgetConfiguration
+        //   3. Write pp_ext_bootstrap.txt diagnostic so we can see what was found
         WallpaperBootstrap.install()
     }
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: _EmptyProvider()) { _ in
-            Color.black.ignoresSafeArea()
+            Color.clear.ignoresSafeArea()
         }
         .configurationDisplayName("Physics Wallpaper")
         .description("Animated physics wallpaper by Pocket Poster.")

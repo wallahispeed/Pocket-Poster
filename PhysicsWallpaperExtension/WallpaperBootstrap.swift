@@ -2,80 +2,155 @@ import Foundation
 import ObjectiveC
 import Darwin
 
-// Patches CHSMutableWidgetDescriptor so our widget kind gets
-// wantsLiveScene = YES.  Call install() once before WidgetKit
-// processes the configuration — done from PhysicsWallpaperBundle.init().
+// Two-pronged approach to activate wantsLiveScene for our widget:
 //
-// CHSMutableWidgetDescriptor lives in HomeBoard.framework (or SpringBoardServices).
-// The extension process doesn't load it automatically, so we dlopen the framework
-// first so NSClassFromString can find the class.
+// 1. Patch CHSMutableWidgetDescriptor.setKind: (the original approach) — works if
+//    HomeBoard.framework is loadable in the extension process.
+//
+// 2. Find LiveSceneWidgetConfiguration in WidgetKit at runtime and call it from
+//    body via makeLiveSceneConfiguration() — the correct approach if (1) fails,
+//    since the descriptor is created in SpringBoard's process, not ours.
+//
+// 3. Write an extension-process diagnostic to a tmp path so the main app can
+//    read it via bad_query and we can see exactly what classes are available.
 
 enum WallpaperBootstrap {
 
     private static var origSetKind: IMP?
     private static var installed = false
 
+    // MARK: - Install (called from PhysicsWallpaperBundle.init)
+
     static func install() {
         guard !installed else { return }
         installed = true
 
-        // Force-load frameworks that may contain CHSMutableWidgetDescriptor.
-        // The class is defined in HomeBoard/CoreHomeScreen; WidgetKit extensions
-        // do not link these by default, so NSClassFromString returns nil without
-        // an explicit dlopen.
-        let frameworkPaths: [String] = [
+        var diag: [String] = ["=== WallpaperBootstrap (extension process) ==="]
+
+        // ── Force-load private frameworks ────────────────────────────────────
+        let frameworks = [
+            "/System/Library/Frameworks/WidgetKit.framework/WidgetKit",
             "/System/Library/PrivateFrameworks/HomeBoard.framework/HomeBoard",
             "/System/Library/PrivateFrameworks/CoreHomeScreen.framework/CoreHomeScreen",
             "/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices",
             "/System/Library/PrivateFrameworks/BoardServices.framework/BoardServices",
         ]
-        for path in frameworkPaths {
-            dlopen(path, RTLD_NOW | RTLD_GLOBAL)
+        for path in frameworks {
+            let h = dlopen(path, RTLD_NOW | RTLD_GLOBAL)
+            diag.append("dlopen \((path as NSString).lastPathComponent): \(h != nil ? "OK" : "FAIL")")
         }
 
-        // Also try to find wantsLiveScene in WidgetKit itself — some iOS 26 builds
-        // moved CHSMutableWidgetDescriptor into a WidgetKit-adjacent private class.
-        let widgetKitPath = "/System/Library/Frameworks/WidgetKit.framework/WidgetKit"
-        dlopen(widgetKitPath, RTLD_NOW | RTLD_GLOBAL)
+        // ── Enumerate WidgetKit classes looking for LiveScene ─────────────────
+        let wkPath = "/System/Library/Frameworks/WidgetKit.framework/WidgetKit"
+        var imageCount: UInt32 = 0
+        if let names = objc_copyClassNamesForImage(wkPath, &imageCount) {
+            var liveSceneClasses: [String] = []
+            for i in 0..<Int(imageCount) {
+                let n = String(cString: names[i])
+                if n.lowercased().contains("livescene") || n.lowercased().contains("live_scene") {
+                    liveSceneClasses.append(n)
+                }
+            }
+            free(UnsafeMutableRawPointer(names))
+            diag.append("WidgetKit LiveScene classes: \(liveSceneClasses.joined(separator: ", "))")
+            WallpaperBootstrap.liveSceneClassNames = liveSceneClasses
+        } else {
+            diag.append("WidgetKit class enumeration: nil")
+        }
 
-        // Try the canonical name and a few iOS-version-specific mangled names.
+        // ── Patch CHSMutableWidgetDescriptor ─────────────────────────────────
         let classNames = [
             "CHSMutableWidgetDescriptor",
             "CHSWidgetDescriptor",
             "_CHSMutableWidgetDescriptor",
-            "WKMutableWidgetDescriptor",
         ]
-
+        var patched = false
         for className in classNames {
-            guard
-                let cls = NSClassFromString(className),
-                let method = class_getInstanceMethod(cls, NSSelectorFromString("setKind:"))
-            else { continue }
+            if let cls = NSClassFromString(className),
+               let method = class_getInstanceMethod(cls, NSSelectorFromString("setKind:")) {
+                patchSetKind(on: cls, method: method)
+                diag.append("Patched \(className).setKind:")
+                patched = true
+                break
+            } else {
+                diag.append("NSClassFromString(\(className)): nil")
+            }
+        }
+        if !patched {
+            diag.append("CHSMutableWidgetDescriptor: not found in extension process")
+        }
 
-            patchSetKind(on: cls, method: method)
-            break
+        // ── Write diagnostic ──────────────────────────────────────────────────
+        // Write to NSTemporaryDirectory so bad_query can reach it
+        // AND to the extension's own container if accessible.
+        let text = diag.joined(separator: "\n")
+        let tmpPath = NSTemporaryDirectory() + "pp_ext_bootstrap.txt"
+        try? text.write(toFile: tmpPath, atomically: true, encoding: .utf8)
+
+        // Also attempt write to shared group if available
+        if let groupURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.com.mak5er.Pocket-Poster") {
+            try? text.write(to: groupURL.appendingPathComponent("pp_ext_bootstrap.txt"),
+                            atomically: true, encoding: .utf8)
         }
     }
 
+    // MARK: - LiveSceneWidgetConfiguration factory (called from PhysicsWallpaperBundle.body)
+
+    static var liveSceneClassNames: [String] = []
+
+    /// Try to instantiate LiveSceneWidgetConfiguration at runtime.
+    /// Returns nil if the class is not available in this process.
+    static func makeLiveSceneConfiguration(kind: String) -> AnyObject? {
+        // Candidate ObjC-bridged class names for LiveSceneWidgetConfiguration
+        let candidates = liveSceneClassNames + [
+            "_TtC9WidgetKit27LiveSceneWidgetConfiguration",
+            "LiveSceneWidgetConfiguration",
+            "WKLiveSceneWidgetConfiguration",
+            "_LiveSceneWidgetConfiguration",
+        ]
+
+        for className in candidates {
+            guard let cls = NSClassFromString(className) else { continue }
+
+            // Try init(kind:)
+            let kindSel = NSSelectorFromString("initWithKind:")
+            if let initMethod = class_getInstanceMethod(cls, kindSel) {
+                typealias InitKindFn = @convention(c) (AnyObject, Selector, NSString) -> AnyObject
+                let imp = method_getImplementation(initMethod)
+                if let instance = cls as? NSObject.Type {
+                    let obj = instance.alloc()
+                    let result = unsafeBitCast(imp, to: InitKindFn.self)(
+                        obj, kindSel, kind as NSString)
+                    return result
+                }
+            }
+
+            // Try plain init
+            if let instance = cls as? NSObject.Type {
+                let obj = instance.init()
+                return obj
+            }
+        }
+        return nil
+    }
+
+    // MARK: - CHSMutableWidgetDescriptor swizzle
+
     private static func patchSetKind(on cls: AnyClass, method: Method) {
         let wantsSel = NSSelectorFromString("setWantsLiveScene:")
+        let ourKind  = "com.mak5er.Pocket-Poster.physics-wallpaper"
 
         let block: @convention(block) (AnyObject, NSString) -> Void = { obj, kind in
-            // Call the original implementation.
             if let orig = WallpaperBootstrap.origSetKind {
                 typealias SetKindFn = @convention(c) (AnyObject, Selector, NSString) -> Void
                 unsafeBitCast(orig, to: SetKindFn.self)(
                     obj, NSSelectorFromString("setKind:"), kind)
             }
-
-            guard (kind as String) == "com.mak5er.Pocket-Poster.physics-wallpaper" else { return }
-
-            // Invoke setWantsLiveScene:YES directly via IMP (can't use
-            // perform(_:with:) for BOOL parameters without boxing).
-            if let wantsMethod = class_getInstanceMethod(type(of: obj), wantsSel) {
-                let imp = method_getImplementation(wantsMethod)
+            guard (kind as String) == ourKind else { return }
+            if let m = class_getInstanceMethod(type(of: obj), wantsSel) {
                 typealias SetBoolFn = @convention(c) (AnyObject, Selector, Bool) -> Void
-                unsafeBitCast(imp, to: SetBoolFn.self)(obj, wantsSel, true)
+                unsafeBitCast(method_getImplementation(m), to: SetBoolFn.self)(obj, wantsSel, true)
             }
         }
 
