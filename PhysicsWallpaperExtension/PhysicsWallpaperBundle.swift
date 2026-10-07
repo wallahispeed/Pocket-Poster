@@ -18,7 +18,7 @@ struct _EmptyProvider: TimelineProvider {
 
 @main
 struct PhysicsWallpaperBundle: Widget {
-    let kind = "com.mak5er.pocketposter.physics-wallpaper"
+    let kind = "com.mak5er.Pocket-Poster.physics-wallpaper"
 
     init() {
         // Patch CHSMutableWidgetDescriptor.setKind: before WidgetKit

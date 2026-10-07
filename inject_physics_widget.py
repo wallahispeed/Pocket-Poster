@@ -32,7 +32,7 @@ W_EMBED_BF   = "PP00000000000000000000AB"  # PBXBuildFile for embedding
 W_DEP        = "PP00000000000000000000AC"  # PBXTargetDependency
 W_PROXY      = "PP00000000000000000000AD"  # PBXContainerItemProxy
 
-BUNDLE_ID = "com.mak5er.pocketposter.PhysicsWallpaperExtension"
+BUNDLE_ID = "com.mak5er.Pocket-Poster.PhysicsWallpaperExtension"
 INFOPLIST  = "PhysicsWallpaperExtension-Info.plist"
 
 # â”€â”€ 1. PBXBuildFile â€” the .appex file reference used in the embed phase â”€â”€

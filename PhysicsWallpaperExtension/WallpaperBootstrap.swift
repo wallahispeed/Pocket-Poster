@@ -29,7 +29,7 @@ enum WallpaperBootstrap {
                     obj, NSSelectorFromString("setKind:"), kind)
             }
 
-            guard (kind as String) == "com.mak5er.pocketposter.physics-wallpaper" else { return }
+            guard (kind as String) == "com.mak5er.Pocket-Poster.physics-wallpaper" else { return }
 
             // Invoke setWantsLiveScene:YES directly via IMP (can't use
             // perform(_:with:) for BOOL parameters without boxing).

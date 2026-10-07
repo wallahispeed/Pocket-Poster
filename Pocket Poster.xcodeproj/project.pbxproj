@@ -438,7 +438,7 @@
 				INFOPLIST_FILE = "PhysicsWallpaperExtension-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.pocketposter.PhysicsWallpaperExtension";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster.PhysicsWallpaperExtension";
 				PRODUCT_MODULE_NAME = PhysicsWallpaperExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -457,7 +457,7 @@
 				INFOPLIST_FILE = "PhysicsWallpaperExtension-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
-				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.pocketposter.PhysicsWallpaperExtension";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster.PhysicsWallpaperExtension";
 				PRODUCT_MODULE_NAME = PhysicsWallpaperExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
