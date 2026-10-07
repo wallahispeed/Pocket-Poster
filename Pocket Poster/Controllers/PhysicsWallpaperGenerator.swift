@@ -7,6 +7,7 @@ import Foundation
 import SpriteKit
 import Metal
 import AVFoundation
+import CoreVideo
 import UIKit
 
 enum PhysicsWallpaperGenerator {
@@ -141,18 +142,14 @@ enum PhysicsWallpaperGenerator {
             cmd.commit()
             cmd.waitUntilCompleted()
 
-            // Metal texture → CVPixelBuffer
+            // Metal texture → CVPixelBuffer (nil attrs = default memory backing)
             var pb: CVPixelBuffer?
-            let attrs: CFDictionary = [
-                kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey: w,
-                kCVPixelBufferHeightKey: h
-            ] as CFDictionary
-            CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA, attrs, &pb)
+            CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA, nil, &pb)
             if let pb = pb {
                 CVPixelBufferLockBaseAddress(pb, [])
                 if let base = CVPixelBufferGetBaseAddress(pb) {
-                    tex.getBytes(base, bytesPerRow: w * 4,
+                    let bytesPerRow = CVPixelBufferGetBytesPerRow(pb)
+                    tex.getBytes(base, bytesPerRow: bytesPerRow,
                                  from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
                 }
                 CVPixelBufferUnlockBaseAddress(pb, [])
