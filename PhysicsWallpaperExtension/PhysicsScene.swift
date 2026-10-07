@@ -16,6 +16,7 @@ import UIKit
 //   and set physicsBody = SKPhysicsBody(texture:size:)
 // ─────────────────────────────────────────────────────────────────
 
+@MainActor
 class PhysicsScene: SKScene, SKPhysicsContactDelegate {
 
     // ── Tunables ──────────────────────────────────────────────────
