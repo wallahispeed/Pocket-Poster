@@ -27,6 +27,12 @@ enum PhysicsWallpaperGenerator {
         DispatchQueue.main.async { UIApplication.shared.change(title: "Physics Wallpaper", body: "Applying descriptor…") }
         try applyDescriptor(appHash: appHash, descriptorURL: descriptorURL)
 
+        // Option 2: scan InternalDaemon containers and attempt to write
+        // wantsLiveScene = YES into SpringBoard/homeboardd's widget descriptor store.
+        DispatchQueue.main.async { UIApplication.shared.change(title: "Physics Wallpaper", body: "Activating live scene…") }
+        LiveWidgetActivator.activate()
+        LiveWidgetActivator.postReloadNotifications()
+
         DispatchQueue.main.async { UIApplication.shared.change(title: "Physics Wallpaper", body: "Done — respinging…") }
     }
 
