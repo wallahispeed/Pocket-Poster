@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Patches 'Pocket Poster.xcodeproj/project.pbxproj' to add the
 PhysicsWallpaperExtension widget extension target and embed it
@@ -14,10 +14,10 @@ with open(PBXPROJ, "r") as f:
     src = f.read()
 
 if "PhysicsWallpaperExtension" in src:
-    print("project.pbxproj already contains PhysicsWallpaperExtension — nothing to do.")
+    print("project.pbxproj already contains PhysicsWallpaperExtension â€” nothing to do.")
     sys.exit(0)
 
-# ── UUID constants (deterministic, won't collide with existing 6F/BQ prefixes) ──
+# â”€â”€ UUID constants (deterministic, won't collide with existing 6F/BQ prefixes) â”€â”€
 W_APPEX_REF  = "PP00000000000000000000A1"  # product file ref (.appex)
 W_TARGET     = "PP00000000000000000000A2"  # native target
 W_FSSYNC     = "PP00000000000000000000A3"  # file-system sync group
@@ -33,8 +33,9 @@ W_DEP        = "PP00000000000000000000AC"  # PBXTargetDependency
 W_PROXY      = "PP00000000000000000000AD"  # PBXContainerItemProxy
 
 BUNDLE_ID = "com.mak5er.pocketposter.PhysicsWallpaperExtension"
+INFOPLIST  = "PhysicsWallpaperExtension-Info.plist"
 
-# ── 1. PBXBuildFile — the .appex file reference used in the embed phase ──
+# â”€â”€ 1. PBXBuildFile â€” the .appex file reference used in the embed phase â”€â”€
 build_file_entry = f"""
 \t\t{W_EMBED_BF} /* PhysicsWallpaperExtension.appex in Embed Foundation Extensions */ = {{isa = PBXBuildFile; fileRef = {W_APPEX_REF} /* PhysicsWallpaperExtension.appex */; settings = {{ATTRIBUTES = (RemoveHeadersOnCopy, ); }}; }};"""
 
@@ -43,7 +44,7 @@ src = src.replace(
     build_file_entry + "\n/* End PBXBuildFile section */"
 )
 
-# ── 2. PBXContainerItemProxy ──
+# â”€â”€ 2. PBXContainerItemProxy â”€â”€
 proxy_entry = f"""
 /* Begin PBXContainerItemProxy section */
 \t\t{W_PROXY} /* PBXContainerItemProxy */ = {{
@@ -61,7 +62,7 @@ src = src.replace(
     proxy_entry + "\n\n/* Begin PBXFileReference section */"
 )
 
-# ── 3. PBXFileReference — the .appex product ──
+# â”€â”€ 3. PBXFileReference â€” the .appex product â”€â”€
 file_ref_entry = f"""
 \t\t{W_APPEX_REF} /* PhysicsWallpaperExtension.appex */ = {{isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PhysicsWallpaperExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; }};"""
 
@@ -70,13 +71,13 @@ src = src.replace(
     file_ref_entry + "\n/* End PBXFileReference section */"
 )
 
-# ── 4. Add .appex to Products group children ──
+# â”€â”€ 4. Add .appex to Products group children â”€â”€
 src = src.replace(
     "6F09B79D2DEB694B00CDE89C /* Pocket Poster.app */,\n\t\t\t);",
     f"6F09B79D2DEB694B00CDE89C /* Pocket Poster.app */,\n\t\t\t\t{W_APPEX_REF} /* PhysicsWallpaperExtension.appex */,\n\t\t\t);"
 )
 
-# ── 5. PBXFileSystemSynchronizedRootGroup for extension source folder ──
+# â”€â”€ 5. PBXFileSystemSynchronizedRootGroup for extension source folder â”€â”€
 fssync_entry = f"""
 \t\t{W_FSSYNC} /* PhysicsWallpaperExtension */ = {{
 \t\t\tisa = PBXFileSystemSynchronizedRootGroup;
@@ -89,7 +90,7 @@ src = src.replace(
     fssync_entry + "\n/* End PBXFileSystemSynchronizedRootGroup section */"
 )
 
-# ── 6. CopyFiles embed phase (goes into main target) ──
+# â”€â”€ 6. CopyFiles embed phase (goes into main target) â”€â”€
 embed_phase = f"""
 /* Begin PBXCopyFilesBuildPhase section */
 \t\t{W_EMBED_PH} /* Embed Foundation Extensions */ = {{
@@ -110,7 +111,7 @@ src = src.replace(
     embed_phase + "\n\n/* Begin PBXFrameworksBuildPhase section */"
 )
 
-# ── 7. Build phases for the extension target ──
+# â”€â”€ 7. Build phases for the extension target â”€â”€
 ext_phases = f"""
 \t\t{W_SRC_PHASE} /* Sources */ = {{isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; }};
 \t\t{W_FW_PHASE} /* Frameworks */ = {{isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; }};
@@ -121,7 +122,7 @@ src = src.replace(
     "/* End PBXFrameworksBuildPhase section */" + ext_phases
 )
 
-# ── 8. PBXNativeTarget for extension ──
+# â”€â”€ 8. PBXNativeTarget for extension â”€â”€
 ext_target = f"""
 \t\t{W_TARGET} /* PhysicsWallpaperExtension */ = {{
 \t\t\tisa = PBXNativeTarget;
@@ -149,7 +150,7 @@ src = src.replace(
     ext_target + "\n/* End PBXNativeTarget section */"
 )
 
-# ── 9. PBXTargetDependency ──
+# â”€â”€ 9. PBXTargetDependency â”€â”€
 dep_section = f"""
 /* Begin PBXTargetDependency section */
 \t\t{W_DEP} /* PBXTargetDependency */ = {{
@@ -164,7 +165,7 @@ src = src.replace(
     dep_section + "\n\n/* Begin XCBuildConfiguration section */"
 )
 
-# ── 10. Add target dependency + embed phase to main Pocket Poster target ──
+# â”€â”€ 10. Add target dependency + embed phase to main Pocket Poster target â”€â”€
 # Add dependency
 src = src.replace(
     "\t\t\tdependencies = (\n\t\t\t);\n\t\t\tfileSystemSynchronizedGroups = (\n\t\t\t\t6F09B79F2DEB694B00CDE89C",
@@ -177,19 +178,19 @@ src = src.replace(
     "6F09B79B2DEB694B00CDE89C /* Resources */,\n\t\t\t\t" + W_EMBED_PH + " /* Embed Foundation Extensions */,\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t\t" + W_DEP
 )
 
-# ── 11. Add extension to project targets list ──
+# â”€â”€ 11. Add extension to project targets list â”€â”€
 src = src.replace(
     "targets = (\n\t\t\t\t6F09B79C2DEB694B00CDE89C /* Pocket Poster */,\n\t\t\t);",
     f"targets = (\n\t\t\t\t6F09B79C2DEB694B00CDE89C /* Pocket Poster */,\n\t\t\t\t{W_TARGET} /* PhysicsWallpaperExtension */,\n\t\t\t);"
 )
 
-# ── 12. Add TargetAttributes for the new target ──
+# â”€â”€ 12. Add TargetAttributes for the new target â”€â”€
 src = src.replace(
     "TargetAttributes = {\n\t\t\t\t\t6F09B79C2DEB694B00CDE89C = {\n\t\t\t\t\t\tCreatedOnToolsVersion = 16.2;\n\t\t\t\t\t};",
     f"TargetAttributes = {{\n\t\t\t\t\t6F09B79C2DEB694B00CDE89C = {{\n\t\t\t\t\t\tCreatedOnToolsVersion = 16.2;\n\t\t\t\t\t}};\n\t\t\t\t\t{W_TARGET} = {{\n\t\t\t\t\t\tCreatedOnToolsVersion = 16.2;\n\t\t\t\t\t}};"
 )
 
-# ── 13. XCBuildConfiguration for extension (Debug + Release) ──
+# â”€â”€ 13. XCBuildConfiguration for extension (Debug + Release) â”€â”€
 ext_configs = f"""
 \t\t{W_DBG_CFG} /* Debug */ = {{
 \t\t\tisa = XCBuildConfiguration;
@@ -197,7 +198,7 @@ ext_configs = f"""
 \t\t\t\tCODE_SIGN_IDENTITY = "";
 \t\t\t\tCODE_SIGNING_ALLOWED = NO;
 \t\t\t\tCODE_SIGNING_REQUIRED = NO;
-\t\t\t\tINFOPLIST_FILE = "PhysicsWallpaperExtension/Info.plist";
+\t\t\t\tINFOPLIST_FILE = "PhysicsWallpaperExtension-Info.plist";
 \t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 26.0;
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = "{BUNDLE_ID}";
@@ -216,7 +217,7 @@ ext_configs = f"""
 \t\t\t\tCODE_SIGN_IDENTITY = "";
 \t\t\t\tCODE_SIGNING_ALLOWED = NO;
 \t\t\t\tCODE_SIGNING_REQUIRED = NO;
-\t\t\t\tINFOPLIST_FILE = "PhysicsWallpaperExtension/Info.plist";
+\t\t\t\tINFOPLIST_FILE = "PhysicsWallpaperExtension-Info.plist";
 \t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 26.0;
 \t\t\t\tLD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
 \t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = "{BUNDLE_ID}";
@@ -235,7 +236,7 @@ src = src.replace(
     ext_configs + "\n/* End XCBuildConfiguration section */"
 )
 
-# ── 14. XCConfigurationList for extension ──
+# â”€â”€ 14. XCConfigurationList for extension â”€â”€
 ext_cfglist = f"""
 \t\t{W_CFG_LIST} /* Build configuration list for PBXNativeTarget "PhysicsWallpaperExtension" */ = {{
 \t\t\tisa = XCConfigurationList;
@@ -255,4 +256,4 @@ src = src.replace(
 with open(PBXPROJ, "w") as f:
     f.write(src)
 
-print("✓ project.pbxproj patched — PhysicsWallpaperExtension target added.")
+print("âœ“ project.pbxproj patched â€” PhysicsWallpaperExtension target added.")

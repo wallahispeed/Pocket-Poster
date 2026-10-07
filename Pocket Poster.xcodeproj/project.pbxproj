@@ -1,4 +1,4 @@
-// !$*UTF8*$!
+﻿// !$*UTF8*$!
 {
 	archiveVersion = 1;
 	classes = {
@@ -435,7 +435,7 @@
 				CODE_SIGN_IDENTITY = "";
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				INFOPLIST_FILE = "PhysicsWallpaperExtension/Info.plist";
+				INFOPLIST_FILE = "PhysicsWallpaperExtension-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
 				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.pocketposter.PhysicsWallpaperExtension";
@@ -454,7 +454,7 @@
 				CODE_SIGN_IDENTITY = "";
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				INFOPLIST_FILE = "PhysicsWallpaperExtension/Info.plist";
+				INFOPLIST_FILE = "PhysicsWallpaperExtension-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
 				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.pocketposter.PhysicsWallpaperExtension";
