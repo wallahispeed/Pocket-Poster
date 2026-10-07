@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     name: Build unsigned IPA
-    runs-on: macos-latest
+    runs-on: macos-13
     timeout-minutes: 45
 
     steps:
