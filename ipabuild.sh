@@ -39,6 +39,14 @@ if [ -e "$TARGET_APP/embedded.mobileprovision" ]; then
     rm -rf "$TARGET_APP/embedded.mobileprovision"
 fi
 
+# Strip signatures from embedded app extensions (e.g. PhysicsWallpaperExtension)
+for APPEX in "$TARGET_APP/PlugIns/"*.appex; do
+    [ -d "$APPEX" ] || continue
+    codesign --remove "$APPEX" 2>/dev/null || true
+    rm -rf "$APPEX/_CodeSignature"
+    rm -rf "$APPEX/embedded.mobileprovision"
+done
+
 mkdir Payload
 cp -r "${APPLICATION_NAME}.app" "Payload/${APPLICATION_NAME}.app"
 strip "Payload/${APPLICATION_NAME}.app/${APPLICATION_NAME}"
