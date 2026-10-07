@@ -106,6 +106,38 @@ struct ContentView: View {
                                 .buttonStyle(TintedButton(color: .blue, fullwidth: true))
                             }
                             Button(action: {
+                                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                                UIApplication.shared.alert(title: "Physics Wallpaper", body: "Starting…", animated: false, withButton: false)
+                                let scene = PhysicsWallpaperGenerator.buildScene()
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    do {
+                                        var hash = pbHash
+                                        if hash.isEmpty {
+                                            DispatchQueue.main.async {
+                                                UIApplication.shared.change(title: "Physics Wallpaper", body: "Detecting PosterBoard…")
+                                            }
+                                            hash = try BadQuery.findPosterBoardHash()
+                                            DispatchQueue.main.async { pbHash = hash }
+                                        }
+                                        try PhysicsWallpaperGenerator.apply(scene: scene, appHash: hash) { msg in
+                                            UIApplication.shared.change(title: "Physics Wallpaper", body: msg)
+                                        }
+                                        DispatchQueue.main.async {
+                                            Haptic.shared.notify(.success)
+                                            RespringHelper.respring()
+                                        }
+                                    } catch {
+                                        DispatchQueue.main.async {
+                                            Haptic.shared.notify(.error)
+                                            UIApplication.shared.alert(body: error.localizedDescription)
+                                        }
+                                    }
+                                }
+                            }) {
+                                Label("Apply Physics Wallpaper", systemImage: "sparkles")
+                            }
+                            .buttonStyle(TintedButton(color: .purple, fullwidth: true))
+                            Button(action: {
                                 UIApplication.shared.confirmAlert(
                                     title: NSLocalizedString("Reset Collections", comment: ""),
                                     body: SymHandler.prefersBadQuery
