@@ -187,16 +187,39 @@ enum PhysicsWallpaperGenerator {
     private static func applyDescriptor(appHash: String, descriptorURL: URL) throws {
         let ext = "com.apple.WallpaperKit.CollectionsPoster"
 
+        // createCaml returns a parent directory containing the actual descriptor folder(s).
+        // Mirror applyTendies: enumerate contents and pass the real descriptor folder.
+        let foldersToWrite = try FileManager.default.contentsOfDirectory(
+            at: descriptorURL, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
+            .filter { $0.lastPathComponent != "__MACOSX" }
+
+        guard !foldersToWrite.isEmpty else {
+            throw NSError(domain: "PhysicsWallpaper", code: 4,
+                          userInfo: [NSLocalizedDescriptionKey: "Descriptor directory is empty after createCaml"])
+        }
+
         if SymHandler.prefersBadQuery {
+            // Wipe stale physics descriptors so they don't accumulate across runs
+            let descPath = BadQuery.descriptorsPath(appHash: appHash, ext: ext)
+            if let wH = try? BadQuery.consume(path: descPath, create: true) {
+                defer { wH.release() }
+                let old = (try? FileManager.default.contentsOfDirectory(atPath: descPath)) ?? []
+                for item in old where !item.hasPrefix(".") {
+                    try? FileManager.default.removeItem(atPath: descPath + "/" + item)
+                }
+            }
             let uuids = try SymHandler.writeDescriptorsViaBadQuery(
-                appHash: appHash, ext: ext, descriptorFolders: [descriptorURL])
+                appHash: appHash, ext: ext, descriptorFolders: foldersToWrite)
             SymHandler.writeToPosterBoardDB(appHash: appHash,
                                              entries: uuids.map { (uuid: $0, ext: ext) })
         } else {
             _ = try SymHandler.createDescriptorsSymlink(appHash: appHash, ext: ext)
             let dst = SymHandler.getDocumentsDirectory()
                 .appendingPathComponent(UUID().uuidString, conformingTo: .directory)
-            try FileManager.default.copyItem(at: descriptorURL, to: dst)
+            for folder in foldersToWrite {
+                try FileManager.default.copyItem(at: folder,
+                    to: dst.appendingPathComponent(folder.lastPathComponent))
+            }
             try FileManager.default.trashItem(at: dst, resultingItemURL: nil)
         }
         SymHandler.cleanup()
