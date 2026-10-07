@@ -29,7 +29,7 @@ class PhysicsSceneDelegate: NSObject, UIWindowSceneDelegate {
 
         let rootVC = UIViewController()
         rootVC.view = skView
-        rootVC.view.backgroundColor = .black
+        rootVC.view.backgroundColor = .clear
 
         let win = UIWindow(windowScene: windowScene)
         win.rootViewController = rootVC

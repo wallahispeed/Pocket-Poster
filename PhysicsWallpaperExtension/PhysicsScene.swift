@@ -1,25 +1,10 @@
 import SpriteKit
 import UIKit
-
-// ─────────────────────────────────────────────────────────────────
-// EDIT THIS FILE to change what the physics wallpaper looks like.
-//
-// Key tunables at the top:
-//   ballCount    — how many objects
-//   ballRadius   — size of each object
-//   gravity      — direction + strength
-//   restitution  — bounciness (0 = dead, 1 = perfect bounce)
-//   ballColors   — what colors the objects cycle through
-//
-// To use images instead of colored circles:
-//   Replace SKShapeNode with SKSpriteNode(imageNamed: "yourimage")
-//   and set physicsBody = SKPhysicsBody(texture:size:)
-// ─────────────────────────────────────────────────────────────────
+import CoreMotion
 
 @MainActor
 class PhysicsScene: SKScene, SKPhysicsContactDelegate {
 
-    // ── Tunables ──────────────────────────────────────────────────
     private let ballCount   = 40
     private let ballRadius: CGFloat = 18
     private let gravity     = CGVector(dx: 0, dy: -5.0)
@@ -30,17 +15,33 @@ class PhysicsScene: SKScene, SKPhysicsContactDelegate {
         .systemGreen, .systemTeal, .systemBlue,
         .systemPurple, .systemPink, .white
     ]
-    // ─────────────────────────────────────────────────────────────
 
     private let ballCategory: UInt32 = 0b01
     private let wallCategory: UInt32 = 0b10
+    private let motionManager = CMMotionManager()
 
     override func didMove(to view: SKView) {
-        backgroundColor = .black
+        backgroundColor = .clear
         physicsWorld.gravity = gravity
         physicsWorld.contactDelegate = self
         buildWalls()
         spawnBalls()
+        startMotionUpdates()
+    }
+
+    private func startMotionUpdates() {
+        guard motionManager.isDeviceMotionAvailable else { return }
+        motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
+        motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+            guard let self, let motion else { return }
+            let g = motion.gravity
+            // Scale gravity so balls visibly follow device tilt
+            self.physicsWorld.gravity = CGVector(dx: g.x * 18, dy: g.y * 18)
+        }
+    }
+
+    override func willMove(from view: SKView) {
+        motionManager.stopDeviceMotionUpdates()
     }
 
     private func buildWalls() {

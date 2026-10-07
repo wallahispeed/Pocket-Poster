@@ -194,6 +194,15 @@ enum PhysicsWallpaperGenerator {
                           userInfo: [NSLocalizedDescriptionKey: "Descriptor directory is empty after createCaml"])
         }
 
+        // Patch each descriptor's Wallpaper.plist to enable device-motion parallax
+        for folder in foldersToWrite {
+            let wallpaperPlist = folder.appendingPathComponent("Wallpaper.plist")
+            if var dict = (NSDictionary(contentsOf: wallpaperPlist) as? [String: Any]) {
+                dict["wantsDeviceMotion"] = true
+                (dict as NSDictionary).write(to: wallpaperPlist, atomically: true)
+            }
+        }
+
         if SymHandler.prefersBadQuery {
             // Wipe stale physics descriptors so they don't accumulate across runs
             let descPath = BadQuery.descriptorsPath(appHash: appHash, ext: ext)
