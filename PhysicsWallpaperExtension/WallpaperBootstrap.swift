@@ -1,21 +1,19 @@
 import Foundation
 import ObjectiveC
 
-// Patches CHSMutableWidgetDescriptor at load time so that our widget kind
-// gets wantsLiveScene = YES.  CHSMutableWidgetDescriptor lives in
-// WidgetKit.framework which is already linked by the extension, so the class
-// is present in our process.  We use imp_implementationWithBlock to replace
-// setKind: with a wrapper that also calls setWantsLiveScene: for our bundle.
-//
-// @_silgen_name("__ZN...") would be cleaner but requires the exact mangled
-// symbol.  The ObjC runtime approach below is stable across minor OS updates.
+// Patches CHSMutableWidgetDescriptor so our widget kind gets
+// wantsLiveScene = YES.  Call install() once before WidgetKit
+// processes the configuration — done from PhysicsWallpaperBundle.init().
 
-@objc(PWEWallpaperBootstrap)
-final class WallpaperBootstrap: NSObject {
+enum WallpaperBootstrap {
 
     private static var origSetKind: IMP?
+    private static var installed = false
 
-    @objc static func load() {
+    static func install() {
+        guard !installed else { return }
+        installed = true
+
         guard
             let cls = NSClassFromString("CHSMutableWidgetDescriptor"),
             let method = class_getInstanceMethod(cls, NSSelectorFromString("setKind:"))
@@ -33,7 +31,8 @@ final class WallpaperBootstrap: NSObject {
 
             guard (kind as String) == "com.mak5er.pocketposter.physics-wallpaper" else { return }
 
-            // Directly invoke setWantsLiveScene: via IMP so we can pass a Bool.
+            // Invoke setWantsLiveScene:YES directly via IMP (can't use
+            // perform(_:with:) for BOOL parameters without boxing).
             if let wantsMethod = class_getInstanceMethod(type(of: obj), wantsSel) {
                 let imp = method_getImplementation(wantsMethod)
                 typealias SetBoolFn = @convention(c) (AnyObject, Selector, Bool) -> Void

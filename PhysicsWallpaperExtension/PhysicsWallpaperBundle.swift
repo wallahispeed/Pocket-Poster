@@ -19,6 +19,13 @@ struct _EmptyProvider: TimelineProvider {
 @main
 struct PhysicsWallpaperBundle: Widget {
     let kind = "com.mak5er.pocketposter.physics-wallpaper"
+
+    init() {
+        // Patch CHSMutableWidgetDescriptor.setKind: before WidgetKit
+        // processes our configuration, so wantsLiveScene is set to YES.
+        WallpaperBootstrap.install()
+    }
+
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: _EmptyProvider()) { _ in
             Color.black.ignoresSafeArea()
