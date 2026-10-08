@@ -119,7 +119,9 @@ enum WallpaperBootstrap {
                 typealias InitKindFn = @convention(c) (AnyObject, Selector, NSString) -> AnyObject
                 let imp = method_getImplementation(initMethod)
                 if let instance = cls as? NSObject.Type {
-                    let obj = instance.alloc()
+                    // alloc() is unavailable in Swift — call via ObjC runtime
+                    let allocSel = NSSelectorFromString("alloc")
+                    guard let obj = (instance as AnyObject).perform(allocSel)?.takeUnretainedValue() else { continue }
                     let result = unsafeBitCast(imp, to: InitKindFn.self)(
                         obj, kindSel, kind as NSString)
                     return result
