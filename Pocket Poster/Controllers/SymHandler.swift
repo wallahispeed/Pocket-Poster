@@ -1936,7 +1936,7 @@ class SymHandler {
 
     @discardableResult
     static func probe7() -> String {
-        var diag = ["=== PosterboarddProbe v7b \(Date()) iOS 26.5 ==="]
+        var diag = ["=== PosterboarddProbe v7c \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
         let uuid: String
         do { uuid = try BadQuery.findPosterBoardHash() } catch {
