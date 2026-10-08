@@ -30,7 +30,8 @@ struct SettingsView: View {
     @State var injectingV11: Bool = false
     @State var probingV12:   Bool = false
     @State var injectingV12: Bool = false
-    
+    @State var injectingV13: Bool = false
+
     var body: some View {
         List {
             Section {
@@ -133,6 +134,41 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Inject v13 — PRPosterCustomTimeFontConfiguration path-traversal gadget
+                // 15x ../ from extensionBundleURL → root → PB container probe font via CGFontCreateFontsWithURL
+                Button(action: {
+                    guard !injectingV13 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV13 = true
+                    UIApplication.shared.alert(
+                        title: "Inject v13…",
+                        body: "PRPosterCustomTimeFontConfiguration path-traversal via extensionBundleRelativeFilePath.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject13()
+                        DispatchQueue.main.async {
+                            injectingV13 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            showProbeOutput = true
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV13 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "arrow.up.right.circle.fill")
+                        }
+                        Text(injectingV13 ? "Injecting v13…" : "Inject v13 (CustomFont path-traversal)")
+                    }
+                }
+                .foregroundStyle(.orange)
+                .disabled(injectingV13)
 
                 // Probe v12 — deep NSKA (class+value) + font-path gadget + SQLite write probe
                 Button(action: {

