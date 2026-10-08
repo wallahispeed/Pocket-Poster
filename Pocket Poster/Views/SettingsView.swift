@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     // Prefs
@@ -16,6 +17,9 @@ struct SettingsView: View {
     @State var checkingForHash: Bool = false
     @State var hashCheckTask: Task<Void, any Error>? = nil
     @State var detectingOnDevice: Bool = false
+    @State var probingPosterboardd: Bool = false
+    @State var probeShareItems: [Any] = []
+    @State var showProbeShare: Bool = false
     
     var body: some View {
         List {
@@ -119,6 +123,46 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // posterboardd storage probe — maps daemon dirs, SQLite schemas, blob cols
+                Button(action: {
+                    guard !probingPosterboardd else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    probingPosterboardd = true
+                    UIApplication.shared.alert(
+                        title: "Probing posterboardd…",
+                        body: "Scanning daemon storage, SQLite schema, binary strings. May take ~10s.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.probePosterboardd()
+                        DispatchQueue.main.async {
+                            probingPosterboardd = false
+                            UIApplication.shared.dismissAlert(animated: true)
+                            // Save to Documents and offer share
+                            let diagURL = SymHandler.getLCDocumentsDirectory()
+                                .appendingPathComponent("pp_posterboardd_diag.txt")
+                            probeShareItems = [output as Any, diagURL]
+                            showProbeShare = true
+                            Haptic.shared.notify(.success)
+                        }
+                    }
+                }) {
+                    HStack {
+                        if probingPosterboardd {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "stethoscope")
+                        }
+                        Text(probingPosterboardd ? "Probing…" : "Probe posterboardd")
+                    }
+                }
+                .foregroundStyle(.orange)
+                .disabled(probingPosterboardd)
+                .sheet(isPresented: $showProbeShare) {
+                    ShareSheet(items: probeShareItems)
+                }
             } header: {
                 Label("Actions", systemImage: "gear")
             }
@@ -270,4 +314,12 @@ struct SettingsView: View {
         hashCheckTask = nil
         checkingForHash = false
     }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
