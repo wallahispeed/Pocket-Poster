@@ -138,10 +138,13 @@ struct SettingsView: View {
                         let output = SymHandler.probePosterboardd()
                         DispatchQueue.main.async {
                             probingPosterboardd = false
-                            UIApplication.shared.dismissAlert(animated: true)
                             probeOutput = output
-                            showProbeOutput = true
+                            UIApplication.shared.dismissAlert(animated: true)
                             Haptic.shared.notify(.success)
+                            // Wait for the dismiss animation to finish before presenting sheet
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
                         }
                     }
                 }) {
@@ -156,9 +159,6 @@ struct SettingsView: View {
                 }
                 .foregroundStyle(.orange)
                 .disabled(probingPosterboardd)
-                .sheet(isPresented: $showProbeOutput) {
-                    ProbeOutputView(output: probeOutput)
-                }
             } header: {
                 Label("Actions", systemImage: "gear")
             }
@@ -212,6 +212,10 @@ struct SettingsView: View {
             } header: {
                 Label("Credits", systemImage: "wrench.and.screwdriver")
             }
+        }
+        // Sheet on the List so it isn't buried in a Button inside a cell
+        .sheet(isPresented: $showProbeOutput) {
+            ProbeOutputView(output: probeOutput)
         }
     }
     
