@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State var showProbeOutput: Bool = false
     @State var probingV6: Bool = false
     @State var triggeringDecode: Bool = false
+    @State var probingV7: Bool = false
     
     var body: some View {
         List {
@@ -124,6 +125,42 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Probe v7 — class introspection + NSKeyedArchive CodingKey extraction
+                Button(action: {
+                    guard !probingV7 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    probingV7 = true
+                    UIApplication.shared.alert(
+                        title: "Probe v7…",
+                        body: "Class introspection + archive key extraction from v1 files.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.probe7()
+                        DispatchQueue.main.async {
+                            probingV7 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if probingV7 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "magnifyingglass.circle.fill")
+                        }
+                        Text(probingV7 ? "Probing v7…" : "Probe v7 (class introspect)")
+                    }
+                }
+                .foregroundStyle(.mint)
+                .disabled(probingV7)
 
                 // Probe v6 — proc_listpids + full versions/ tree + crash logs
                 Button(action: {

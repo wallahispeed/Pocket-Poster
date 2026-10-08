@@ -1931,4 +1931,151 @@ class SymHandler {
             break  // only need one binary
         }
     }
+
+    // MARK: - Probe v7: class introspection + NSKeyedArchive CodingKey extraction
+
+    @discardableResult
+    static func probe7() -> String {
+        var diag = ["=== PosterboarddProbe v7 \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        diag.append("container: \(container)")
+
+        // [A] Load PosterKit/WallpaperKit so their ObjC classes register
+        diag.append("\n[A] Framework loads:")
+        for fwPath in [
+            "/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+            "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit",
+            "/System/Library/PrivateFrameworks/PosterBoard.framework/PosterBoard",
+        ] {
+            let h = dlopen(fwPath, RTLD_NOW | RTLD_GLOBAL)
+            let name = (fwPath as NSString).lastPathComponent
+            diag.append("  \(name): \(h != nil ? "OK" : "FAIL \(String(cString: dlerror()))")")
+        }
+
+        // [B] NSClassFromString for all PR*/PF* target classes
+        diag.append("\n[B] Class availability:")
+        let wantedClasses = [
+            "PRPosterMetadata", "PRSPosterConfiguration", "PRSPosterMetadata",
+            "PRPosterRenderingConfiguration", "PRPosterTitleStyleConfiguration",
+            "PRPosterQuickActionsConfiguration", "PRPosterComplicationLayoutConfiguration",
+            "PRPosterLayoutConfiguration", "PRSPosterRenderingConfiguration",
+            "PFPosterPath", "PFPosterTemplate", "PFPosterDescriptor",
+            "PRPosterTitleStyle", "PRPosterQuickActions", "PRPosterComplicationLayout",
+        ]
+        var foundClasses: [String] = []
+        for cn in wantedClasses {
+            if NSClassFromString(cn) != nil {
+                foundClasses.append(cn)
+                diag.append("  \(cn): FOUND")
+            } else {
+                diag.append("  \(cn): nil")
+            }
+        }
+
+        // [C] Read v1 PRPosterMetadata bplist from ClockPoster and dump its CodingKeys
+        diag.append("\n[C] v1 PRPosterMetadata archive structure (real file from disk):")
+        let clockExt  = extBase + "/com.apple.ClockPoster.ClockPosterExtension"
+        let clockCfgs = ["87681D1B", "0C4D8DC9", "40711E83", "5B719548", "429555FB"]
+        var dumpedC   = false
+        for cfg in clockCfgs {
+            let metaPath = "\(clockExt)/configurations/\(cfg)/versions/1/com.apple.posterkit.provider.contents.otherMetadata.plist"
+            guard let bh = try? BadQuery.consume(path: metaPath, create: true),
+                  let data = fm.contents(atPath: metaPath), data.count > 0 else { continue }
+            bh.release()
+            diag.append("  cfg=\(cfg) v1 \(data.count)b")
+            p7DumpNSKAKeys(data: data, indent: "  ", diag: &diag)
+            dumpedC = true
+            break
+        }
+        if !dumpedC { diag.append("  no v1 clock config readable") }
+        // Comparison: our injected payload
+        diag.append("  [our 461b PRSPosterConfiguration payload, for comparison]")
+        p7DumpNSKAKeys(data: posterboarddPayloadBase, indent: "  ", diag: &diag)
+
+        // [D] RuntimeSnapshotMetadata-lock.plist XML (WallpaperKit v0, untouched)
+        diag.append("\n[D] RuntimeSnapshotMetadata-lock.plist (WallpaperKit v0):")
+        let wkExt = extBase + "/com.apple.WallpaperKit.CollectionsPoster"
+        var dumpedD = false
+        for wkCfg in ["4D42F4D1", "1F51F085"] {
+            let snapPath = "\(wkExt)/configurations/\(wkCfg)/versions/0/RuntimeSnapshotMetadata-lock.plist"
+            guard let bh = try? BadQuery.consume(path: snapPath, create: true),
+                  let data = fm.contents(atPath: snapPath),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            bh.release()
+            diag.append("  cfg=\(wkCfg):")
+            diag.append(String(text.prefix(3000)))
+            dumpedD = true
+            break
+        }
+        if !dumpedD { diag.append("  not readable") }
+
+        // [E] alloc+init+encode each found class to reveal their own CodingKeys
+        diag.append("\n[E] Empty class archive structure (alloc+init in our process):")
+        for cn in foundClasses {
+            guard let cls = NSClassFromString(cn) as? NSObject.Type else { continue }
+            autoreleasepool {
+                let obj = cls.init()
+                if let data = try? NSKeyedArchiver.archivedData(withRootObject: obj, requiringSecureCoding: false) {
+                    diag.append("  \(cn): \(data.count)b")
+                    p7DumpNSKAKeys(data: data, indent: "    ", diag: &diag)
+                } else {
+                    diag.append("  \(cn): encode failed")
+                }
+            }
+        }
+
+        // [F] Confirm WallpaperKit v0 instance files — still our payload?
+        diag.append("\n[F] WallpaperKit v0 instance files:")
+        let instanceFiles = [
+            "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",
+            "com.apple.posterkit.provider.instance.renderingConfiguration.plist",
+            "com.apple.posterkit.provider.instance.complicationLayout.plist",
+            "com.apple.posterkit.provider.instance.quickActions.plist",
+        ]
+        for wkCfg in ["4D42F4D1", "1F51F085"] {
+            let v0 = "\(wkExt)/configurations/\(wkCfg)/versions/0"
+            for iFile in instanceFiles {
+                let iPath = "\(v0)/\(iFile)"
+                guard let bh = try? BadQuery.consume(path: iPath, create: true),
+                      let data = fm.contents(atPath: iPath) else { continue }
+                bh.release()
+                let short = iFile.replacingOccurrences(of: "com.apple.posterkit.provider.instance.", with: "")
+                diag.append("  \(wkCfg)/\(short): \(data.count)b isOurs=\(data.count == posterboarddPayloadBase.count)")
+                p7DumpNSKAKeys(data: data, indent: "    ", diag: &diag)
+            }
+        }
+
+        return pbSave(diag)
+    }
+
+    private static func p7DumpNSKAKeys(data: Data, indent: String, diag: inout [String]) {
+        guard data.count >= 8,
+              String(data: data.prefix(8), encoding: .ascii) == "bplist00",
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let objects = plist["$objects"] as? [Any] else {
+            diag.append("\(indent)not bplist00 NSKA"); return
+        }
+        // Collect all ObjC class names in the archive
+        var classNames: [String] = []
+        for obj in objects {
+            if let d = obj as? [String: Any], let cn = d["$classname"] as? String {
+                classNames.append(cn)
+            }
+        }
+        diag.append("\(indent)classes: \(classNames.joined(separator: " → "))")
+        // Dump each encoded object's CodingKeys (skip class table entries and null)
+        for (i, obj) in objects.enumerated() where i > 0 {
+            guard let d = obj as? [String: Any], d["$classname"] == nil else { continue }
+            let codingKeys = d.keys.sorted().filter { !$0.hasPrefix("$") }
+            guard !codingKeys.isEmpty else { continue }
+            let metaKeys = d.keys.sorted().filter { $0.hasPrefix("$") }
+            diag.append("\(indent)obj[\(i)] meta=\(metaKeys.joined(separator:",")) keys[\(codingKeys.count)]: \(codingKeys.joined(separator: ", "))")
+        }
+    }
 }
