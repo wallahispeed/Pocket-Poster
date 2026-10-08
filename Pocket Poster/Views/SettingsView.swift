@@ -150,6 +150,11 @@ struct SettingsView: View {
                     DispatchQueue.global(qos: .userInitiated).async {
                         let output = SymHandler.inject13()
                         let didWrite = output.contains("WRITTEN")
+                        // Always save to Documents so output survives the respring
+                        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                            try? output.write(to: docs.appendingPathComponent("inject13-diag.txt"),
+                                              atomically: true, encoding: .utf8)
+                        }
                         DispatchQueue.main.async {
                             injectingV13 = false
                             probeOutput = output
