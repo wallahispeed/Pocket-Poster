@@ -3819,13 +3819,14 @@ class SymHandler {
         diag.append("  fontPostScriptName: pp-probe-13")
         diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
 
-        // Secondary payload: traverse to system font HelveticaNeue.ttc.
-        // If clock time visually changes → sandbox permits system font traversal.
-        _PP13CustomFontConfigProxy.fontPostScriptName = "HelveticaNeue"
+        // Secondary payload: traverse to system font CourierNew.ttf.
+        // Courier New digits are monospaced/typewriter — unmistakably different from SF Pro.
+        // If clock shows serif monospaced numerals after respring → PATH TRAVERSAL CONFIRMED.
+        _PP13CustomFontConfigProxy.fontPostScriptName = "CourierNewPSMT"
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath =
-            traversalPrefix + "System/Library/Fonts/HelveticaNeue.ttc"
+            traversalPrefix + "System/Library/Fonts/CourierNew.ttf"
         let payload13sys = payloadTitleStyleCustomFont13
-        diag.append("payload13sys (HelveticaNeue system font): \(payload13sys.count)b")
+        diag.append("payload13sys (CourierNew system font): \(payload13sys.count)b")
         // Verify class names are correct in the archive
         p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
@@ -3883,8 +3884,8 @@ class SymHandler {
         }
 
         diag.append("\ntotal written: \(totalWritten)")
-        diag.append("payload13sys path: \(traversalPrefix + "System/Library/Fonts/HelveticaNeue.ttc")")
-        diag.append("After injecting: lock screen → if clock shows different font → PATH TRAVERSAL CONFIRMED")
+        diag.append("payload13sys path: \(traversalPrefix + "System/Library/Fonts/CourierNew.ttf")")
+        diag.append("After respring: lock screen clock in TYPEWRITER/MONOSPACED digits = PATH TRAVERSAL CONFIRMED")
         return pbSave(diag)
     }
 }
