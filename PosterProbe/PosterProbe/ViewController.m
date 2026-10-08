@@ -135,7 +135,54 @@
         }
     }
 
-    [out appendString:@"\n=== DONE ===\n"];
+    // 4. Method list introspection — read-only, no alloc/init
+    //    Shows what init/factory methods PRSService and PRSWallpaperClient have
+    [out appendString:@"[4] PRSService class methods\n"];
+    Class rsvc = NSClassFromString(@"PRSService");
+    if (rsvc) {
+        unsigned int n = 0;
+        Method *ms = class_copyMethodList(object_getClass(rsvc), &n);
+        for (unsigned int i = 0; i < n; i++) {
+            const char *sn = sel_getName(method_getName(ms[i]));
+            if (strstr(sn, "init") || strstr(sn, "shared") || strstr(sn, "default") ||
+                strstr(sn, "service") || strstr(sn, "create") || strstr(sn, "new")) {
+                [out appendFormat:@"  +[PRSService %s]\n", sn];
+            }
+        }
+        if (ms) free(ms);
+        ms = class_copyMethodList(rsvc, &n);
+        for (unsigned int i = 0; i < n; i++) {
+            const char *sn = sel_getName(method_getName(ms[i]));
+            if (strstr(sn, "import") || strstr(sn, "mutate") || strstr(sn, "install")) {
+                [out appendFormat:@"  -[PRSService %s]\n", sn];
+            }
+        }
+        if (ms) free(ms);
+    } else {
+        [out appendString:@"  PRSService: class not found\n"];
+    }
+    [out appendString:@"\n"];
+
+    [out appendString:@"[5] PRSWallpaperClient class methods\n"];
+    Class wcls = NSClassFromString(@"PRSWallpaperClient");
+    if (wcls) {
+        unsigned int n = 0;
+        Method *ms = class_copyMethodList(object_getClass(wcls), &n);
+        for (unsigned int i = 0; i < n; i++) {
+            [out appendFormat:@"  +[PRSWallpaperClient %s]\n", sel_getName(method_getName(ms[i]))];
+        }
+        if (ms) free(ms);
+        ms = class_copyMethodList(wcls, &n);
+        for (unsigned int i = 0; i < n; i++) {
+            [out appendFormat:@"  -[PRSWallpaperClient %s]\n", sel_getName(method_getName(ms[i]))];
+        }
+        if (ms) free(ms);
+    } else {
+        [out appendString:@"  PRSWallpaperClient: class not found\n"];
+    }
+    [out appendString:@"\n"];
+
+    [out appendString:@"=== DONE ===\n"];
     return out;
 }
 
