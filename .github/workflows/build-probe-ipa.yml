@@ -24,14 +24,15 @@ jobs:
       - name: Select Xcode
         run: |
           ls /Applications | grep -i Xcode || true
-          XCODE=$(ls /Applications/ | grep -E "^Xcode_1[6-9]|^Xcode_2" | sort -V | tail -1)
-          if [ -n "$XCODE" ]; then
-            echo "Selecting Xcode: $XCODE"
-            sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          XCODE16=$(ls /Applications/ | grep -E "^Xcode_16" | sort -V | tail -1)
+          if [ -n "$XCODE16" ]; then
+            echo "Selecting Xcode 16: $XCODE16"
+            sudo xcode-select -s "/Applications/$XCODE16/Contents/Developer"
           else
             sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           fi
           xcodebuild -version
+          xcodebuild -showsdks | grep iphoneos || true
 
       - name: Inject PhysicsWallpaperExtension
         run: python3 inject_physics_widget.py
