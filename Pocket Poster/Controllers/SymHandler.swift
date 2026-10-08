@@ -2903,6 +2903,7 @@ class SymHandler {
                         } else {
                             diag.append("  PRPosterSystemTimeFontConfig init → nil")
                         }
+                        }  // close if let allocM/initM
                     } else {
                         diag.append("  PRPosterSystemTimeFontConfig initWithTimeFontIdentifier: not found")
                     }
