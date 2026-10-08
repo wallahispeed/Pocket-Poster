@@ -2845,6 +2845,67 @@ class SymHandler {
             }
         }
 
+        // [A3] PRPosterTimeFontConfiguration factory method probe — does bundleURL end up in archive?
+        // If yes, we can inject extensionBundleURL → posterboardd loads fonts from our bundle path.
+        diag.append("\n[A3] PRPosterTimeFontConfiguration factory method probe (extensionBundleURL):")
+        if let cls = NSClassFromString("PRPosterTimeFontConfiguration") as AnyObject?,
+           let nsObj = cls as? NSObject.Type {
+            let bundleSel = NSSelectorFromString("configurationWithTimeFontConfiguration:extensionBundleURL:systemItem:")
+            let bundleURLSel = NSSelectorFromString("configurationWithExtensionBundleURL:timeFontIdentifier:weight:systemItem:")
+            let sysTimeSel  = NSSelectorFromString("defaultConfiguration")
+            // Try defaultConfiguration first
+            if nsObj.responds(to: sysTimeSel) {
+                if let defObj = nsObj.perform(sysTimeSel)?.takeUnretainedValue() {
+                    let arch = NSKeyedArchiver(requiringSecureCoding: false)
+                    arch.encode(defObj, forKey: NSKeyedArchiveRootObjectKey)
+                    arch.finishEncoding()
+                    diag.append("  defaultConfiguration (\(arch.encodedData.count)b):")
+                    p7DumpNSKAKeys(data: arch.encodedData, indent: "    ", diag: &diag)
+                } else {
+                    diag.append("  defaultConfiguration → nil")
+                }
+            } else {
+                diag.append("  defaultConfiguration: not found")
+            }
+            // Try factory with our bundle URL
+            if nsObj.responds(to: bundleSel) {
+                let ourURL = Bundle.main.bundleURL as NSURL
+                if let cfgObj = nsObj.perform(bundleSel, with: nil, with: ourURL, with: false)?.takeUnretainedValue() {
+                    let arch = NSKeyedArchiver(requiringSecureCoding: false)
+                    arch.encode(cfgObj, forKey: NSKeyedArchiveRootObjectKey)
+                    arch.finishEncoding()
+                    diag.append("  withBundleURL (\(arch.encodedData.count)b):")
+                    p7DumpNSKAKeys(data: arch.encodedData, indent: "    ", diag: &diag)
+                } else {
+                    diag.append("  withBundleURL → nil")
+                }
+            } else {
+                diag.append("  configWithBundleURL: selector not found — try PRPosterSystemTimeFontConfiguration")
+                // Try PRPosterSystemTimeFontConfiguration
+                if let sCls = NSClassFromString("PRPosterSystemTimeFontConfiguration") as? NSObject.Type {
+                    let initSel = NSSelectorFromString("initWithTimeFontIdentifier:weight:systemItem:")
+                    if sCls.instancesRespond(to: initSel) {
+                        let sObj = sCls.alloc()
+                        if let built = sObj.perform(initSel, with: "pp_probe_font_id",
+                                                    with: NSNumber(value: 0.0),
+                                                    with: NSNumber(value: false))?.takeUnretainedValue() {
+                            let arch = NSKeyedArchiver(requiringSecureCoding: false)
+                            arch.encode(built, forKey: NSKeyedArchiveRootObjectKey)
+                            arch.finishEncoding()
+                            diag.append("  PRPosterSystemTimeFontConfig(id:wt:sys:) (\(arch.encodedData.count)b):")
+                            p7DumpNSKAKeys(data: arch.encodedData, indent: "    ", diag: &diag)
+                        } else {
+                            diag.append("  PRPosterSystemTimeFontConfig init → nil")
+                        }
+                    } else {
+                        diag.append("  PRPosterSystemTimeFontConfig initWithTimeFontIdentifier: not found")
+                    }
+                }
+            }
+        } else {
+            diag.append("  PRPosterTimeFontConfiguration: NOTFOUND")
+        }
+
         // [B] PRComplicationDescriptor runtime key dump
         diag.append("\n[B] PRComplicationDescriptor runtime key dump:")
         if let cls = NSClassFromString("PRComplicationDescriptor") as? NSObject.Type {
