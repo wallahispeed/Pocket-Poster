@@ -3819,35 +3819,17 @@ class SymHandler {
         diag.append("  fontPostScriptName: pp-probe-13")
         diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
 
-        // Probe which distinctive system font files actually exist on this device.
-        // Auto-pick the first one found; fall back to HelveticaNeue (confirmed path).
-        let candidateFonts: [(ps: String, path: String, label: String)] = [
-            ("Zapfino",            "/System/Library/Fonts/Zapfino.ttf",           "calligraphic"),
-            ("CourierNewPSMT",     "/System/Library/Fonts/CourierNew.ttf",         "typewriter"),
-            ("Georgia",            "/System/Library/Fonts/Georgia.ttf",            "serif"),
-            ("TimesNewRomanPSMT",  "/System/Library/Fonts/TimesNewRoman.ttf",      "times"),
-            ("AmericanTypewriter", "/System/Library/Fonts/AmericanTypewriter.ttc", "typewriter2"),
-            ("HelveticaNeue",      "/System/Library/Fonts/HelveticaNeue.ttc",      "helvetica"),
-        ]
-        diag.append("canary font file check:")
-        var chosenPS    = "HelveticaNeue"
-        var chosenRel   = "System/Library/Fonts/HelveticaNeue.ttc"
-        var chosenLabel = "helvetica-fallback"
-        for c in candidateFonts {
-            let exists = fm.fileExists(atPath: c.path)
-            diag.append("  \(exists ? "YES" : " no") \(c.ps)")
-            if exists && chosenLabel == "helvetica-fallback" && c.ps != "HelveticaNeue" {
-                chosenPS    = c.ps
-                chosenRel   = String(c.path.dropFirst())   // strip leading /
-                chosenLabel = c.label
-            }
-        }
-        diag.append("chosen canary: \(chosenPS) [\(chosenLabel)]")
-        _PP13CustomFontConfigProxy.fontPostScriptName = chosenPS
-        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + chosenRel
+        // FileManager.fileExists returns false for /System/Library/Fonts/ from the app sandbox —
+        // that doesn't mean the files are absent; posterboardd runs with broader permissions.
+        // Canary: Georgia serif. Digit 0-9 glyphs have small serifs at stroke ends — completely
+        // different from SF Pro / Helvetica Neue at a glance on the lock screen.
+        // If this path is wrong posterboardd falls back to its default; try next candidate build.
+        let canaryPS  = "Georgia"
+        let canaryRel = "System/Library/Fonts/Georgia.ttf"
+        _PP13CustomFontConfigProxy.fontPostScriptName = canaryPS
+        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + canaryRel
         let payload13sys = payloadTitleStyleCustomFont13
-        diag.append("payload13sys (\(chosenLabel) \(chosenPS)): \(payload13sys.count)b")
-        // Verify class names are correct in the archive
+        diag.append("payload13sys (Georgia serif canary): \(payload13sys.count)b")
         p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
         let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
@@ -3904,8 +3886,8 @@ class SymHandler {
         }
 
         diag.append("\ntotal written: \(totalWritten)")
-        diag.append("payload13sys path: \(traversalPrefix + chosenRel)")
-        diag.append("After respring: clock in \(chosenLabel.uppercased()) digits = PATH TRAVERSAL CONFIRMED")
+        diag.append("payload13sys path: \(traversalPrefix + canaryRel)")
+        diag.append("After respring: serif digits with small horizontal bars at tips = Georgia loaded = CONFIRMED")
         return pbSave(diag)
     }
 }
