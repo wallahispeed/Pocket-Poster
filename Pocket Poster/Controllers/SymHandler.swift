@@ -2810,10 +2810,11 @@ class SymHandler {
             diag.append("  encoded \(data.count)b")
             p7DumpNSKAKeys(data: data, indent: "  ", diag: &diag)
             // Also try alloc+initWithCoder: to see what keys it READS
-            let testCoder = NSKeyedUnarchiver(forReadingFrom: data)
-            testCoder.requiresSecureCoding = false
-            let decoded = testCoder.decodeObject(forKey: NSKeyedArchiveRootObjectKey)
-            diag.append("  decoded: \(type(of: decoded)) \(decoded != nil ? "OK" : "nil")")
+            if let testCoder = try? NSKeyedUnarchiver(forReadingFrom: data) {
+                testCoder.requiresSecureCoding = false
+                let decoded = testCoder.decodeObject(forKey: NSKeyedArchiveRootObjectKey)
+                diag.append("  decoded: \(type(of: decoded)) \(decoded != nil ? "OK" : "nil")")
+            }
         } else {
             diag.append("  PFPosterDescriptor: NSClassFromString FAIL")
         }
@@ -3300,13 +3301,15 @@ class SymHandler {
     // Live-decode an NSKA blob and enumerate every ObjC property of the root object
     // via the ObjC runtime, walking up the class hierarchy.
     private static func p12LiveDecodeProps(data: Data, indent: String, diag: inout [String]) {
-        let unarchiver = NSKeyedUnarchiver(forReadingFrom: data)
+        guard let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data) else {
+            diag.append("\(indent)decode → unarchiver init failed"); return
+        }
         unarchiver.requiresSecureCoding = false
         guard let obj = unarchiver.decodeObject(forKey: NSKeyedArchiveRootObjectKey) else {
             diag.append("\(indent)decode → nil"); return
         }
         diag.append("\(indent)decoded: \(type(of: obj))")
-        var cls: AnyClass? = type(of: obj) as AnyClass
+        var cls: AnyClass? = object_getClass(obj as AnyObject)
         var seen = Set<String>()
         while let c = cls, NSStringFromClass(c) != "NSObject" {
             var cnt: UInt32 = 0
@@ -3479,7 +3482,7 @@ class SymHandler {
                 }
                 defer { sqlite3_finalize(upStmt) }
                 payload.withUnsafeBytes { ptr in
-                    _ = sqlite3_bind_blob(upStmt, 1, ptr.baseAddress, Int32(payload.count), SQLITE_TRANSIENT)
+                    _ = sqlite3_bind_blob(upStmt, 1, ptr.baseAddress, Int32(payload.count), unsafeBitCast(-1, to: sqlite3_destructor_type.self))
                 }
                 let updRC = sqlite3_step(upStmt)
                 let changes = sqlite3_changes(db)
