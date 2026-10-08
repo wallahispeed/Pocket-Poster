@@ -3820,10 +3820,10 @@ class SymHandler {
         diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
 
         // All system fonts are under /System/Library/Fonts/Core/ on this device (confirmed via
-        // opendir enumeration). Courier New is there: monospaced typewriter digits are completely
-        // distinct from SF Pro — unmistakable on the lock screen clock.
-        let canaryPS  = "CourierNewPSMT"
-        let canaryRel = "System/Library/Fonts/Core/CourierNew.ttf"
+        // opendir enumeration — previous attempts all targeted the wrong path without /Core/).
+        // DINAlternate-bold.ttf: filename = PostScript name, no guessing. Wide industrial digits.
+        let canaryPS  = "DINAlternate-Bold"
+        let canaryRel = "System/Library/Fonts/Core/DINAlternate-bold.ttf"
         _PP13CustomFontConfigProxy.fontPostScriptName = canaryPS
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + canaryRel
         let payload13sys = payloadTitleStyleCustomFont13
@@ -3885,7 +3885,7 @@ class SymHandler {
 
         diag.append("\ntotal written: \(totalWritten)")
         diag.append("payload13sys path: \(traversalPrefix + canaryRel)")
-        diag.append("After respring: typewriter/monospaced digits = CourierNew loaded = PATH TRAVERSAL CONFIRMED")
+        diag.append("After respring: wide bold industrial digits (DIN) = font loaded = PATH TRAVERSAL CONFIRMED")
         return pbSave(diag)
     }
 }
