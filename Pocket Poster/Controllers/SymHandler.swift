@@ -2872,8 +2872,8 @@ class SymHandler {
             if nsObj.responds(to: bundleSel) {
                 let ourURL = Bundle.main.bundleURL as NSURL
                 typealias _CfgFn = @convention(c) (AnyObject, Selector, AnyObject?, AnyObject, Bool) -> Unmanaged<AnyObject>?
-                let _cfgFn = unsafeBitCast(objc_msgSend, to: _CfgFn.self)
-                if let cfgObj = _cfgFn(nsObj, bundleSel, nil, ourURL, false)?.takeUnretainedValue() {
+                if let cfgM = class_getClassMethod(nsObj, bundleSel),
+                   let cfgObj = unsafeBitCast(method_getImplementation(cfgM), to: _CfgFn.self)(nsObj, bundleSel, nil, ourURL, false)?.takeUnretainedValue() {
                     let arch = NSKeyedArchiver(requiringSecureCoding: false)
                     arch.encode(cfgObj, forKey: NSKeyedArchiveRootObjectKey)
                     arch.finishEncoding()
@@ -2888,10 +2888,13 @@ class SymHandler {
                 if let sCls = NSClassFromString("PRPosterSystemTimeFontConfiguration") as? NSObject.Type {
                     let initSel = NSSelectorFromString("initWithTimeFontIdentifier:weight:systemItem:")
                     if sCls.instancesRespond(to: initSel) {
+                        let allocSel2 = NSSelectorFromString("alloc")
                         typealias _AllocFn = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>
-                        let sAlloc = unsafeBitCast(objc_msgSend, to: _AllocFn.self)(sCls, NSSelectorFromString("alloc")).takeRetainedValue()
                         typealias _InitFn = @convention(c) (AnyObject, Selector, AnyObject, AnyObject, Bool) -> Unmanaged<AnyObject>?
-                        if let built = unsafeBitCast(objc_msgSend, to: _InitFn.self)(sAlloc, initSel, "pp_probe_font_id" as NSString, NSNumber(value: 0.0), false)?.takeUnretainedValue() {
+                        if let allocM = class_getClassMethod(sCls, allocSel2),
+                           let initM = class_getInstanceMethod(sCls, initSel) {
+                        let sAlloc = unsafeBitCast(method_getImplementation(allocM), to: _AllocFn.self)(sCls, allocSel2).takeRetainedValue()
+                        if let built = unsafeBitCast(method_getImplementation(initM), to: _InitFn.self)(sAlloc, initSel, "pp_probe_font_id" as NSString, NSNumber(value: 0.0), false)?.takeUnretainedValue() {
                             let arch = NSKeyedArchiver(requiringSecureCoding: false)
                             arch.encode(built, forKey: NSKeyedArchiveRootObjectKey)
                             arch.finishEncoding()
