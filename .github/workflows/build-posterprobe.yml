@@ -1,0 +1,49 @@
+name: Build PosterProbe IPA
+
+on:
+  push:
+    paths:
+      - 'PosterProbe/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build (unsigned)
+        run: |
+          cd PosterProbe
+          xcodebuild archive \
+            -project PosterProbe.xcodeproj \
+            -scheme PosterProbe \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/PosterProbe.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            | xcpretty || true
+
+      - name: Package IPA
+        run: |
+          APP=$(find "$RUNNER_TEMP/PosterProbe.xcarchive" -name "PosterProbe.app" | head -1)
+          echo "Found app: $APP"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -r "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          zip -r "$RUNNER_TEMP/PosterProbe.ipa" Payload/
+          echo "IPA size: $(du -sh "$RUNNER_TEMP/PosterProbe.ipa" | cut -f1)"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PosterProbe-unsigned
+          path: ${{ runner.temp }}/PosterProbe.ipa
+          retention-days: 30
