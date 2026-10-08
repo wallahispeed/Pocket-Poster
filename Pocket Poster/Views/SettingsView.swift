@@ -149,12 +149,19 @@ struct SettingsView: View {
                     )
                     DispatchQueue.global(qos: .userInitiated).async {
                         let output = SymHandler.inject13()
+                        let didWrite = output.contains("WRITTEN")
                         DispatchQueue.main.async {
                             injectingV13 = false
                             probeOutput = output
                             UIApplication.shared.dismissAlert(animated: true)
                             Haptic.shared.notify(.success)
                             showProbeOutput = true
+                            if didWrite {
+                                // Respring so posterboardd restarts and reads our injected config
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                    RespringHelper.respring()
+                                }
+                            }
                         }
                     }
                 }) {
