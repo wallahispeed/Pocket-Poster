@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State var probingPosterboardd: Bool = false
     @State var probeOutput: String = ""
     @State var showProbeOutput: Bool = false
+    @State var probingV6: Bool = false
     @State var triggeringDecode: Bool = false
     
     var body: some View {
@@ -123,6 +124,42 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Probe v6 — proc_listpids + full versions/ tree + crash logs
+                Button(action: {
+                    guard !probingV6 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    probingV6 = true
+                    UIApplication.shared.alert(
+                        title: "Probe v6…",
+                        body: "PID scan + full versions/ tree + crash logs + transient trigger.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.probe6()
+                        DispatchQueue.main.async {
+                            probingV6 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if probingV6 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "magnifyingglass.circle")
+                        }
+                        Text(probingV6 ? "Probing v6…" : "Probe v6 (deep)")
+                    }
+                }
+                .foregroundStyle(.cyan)
+                .disabled(probingV6)
 
                 // posterboardd storage probe — maps daemon dirs, SQLite schemas, blob cols
                 Button(action: {
