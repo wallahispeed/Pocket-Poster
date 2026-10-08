@@ -3821,13 +3821,15 @@ class SymHandler {
 
         // All system fonts are under /System/Library/Fonts/Core/ on this device (confirmed via
         // opendir enumeration — previous attempts all targeted the wrong path without /Core/).
-        // DINAlternate-bold.ttf: filename = PostScript name, no guessing. Wide industrial digits.
+        // DINAlternate-Bold: target font. PS name confirmed from CoreText metadata.
+        // Filename confirmed lowercase-b via opendir enumeration on device.
+        // If font still doesn't change after respring, try capital-B: "DINAlternate-Bold.ttf".
         let canaryPS  = "DINAlternate-Bold"
         let canaryRel = "System/Library/Fonts/Core/DINAlternate-bold.ttf"
         _PP13CustomFontConfigProxy.fontPostScriptName = canaryPS
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + canaryRel
         let payload13sys = payloadTitleStyleCustomFont13
-        diag.append("payload13sys (CourierNew canary — Core subdir): \(payload13sys.count)b")
+        diag.append("payload13sys (DINAlternate-Bold canary 15x../ Core/DINAlternate-bold.ttf): \(payload13sys.count)b")
         p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
         let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
@@ -3885,7 +3887,19 @@ class SymHandler {
 
         diag.append("\ntotal written: \(totalWritten)")
         diag.append("payload13sys path: \(traversalPrefix + canaryRel)")
-        diag.append("After respring: wide bold industrial digits (DIN) = font loaded = PATH TRAVERSAL CONFIRMED")
+
+        // PRPosterPathModelObjectCache -titleStyleConfiguration is a write-once cache (confirmed
+        // from PosterKit disasm). Once _titleStyleConfigurationLoadError or _titleStyleConfiguration
+        // is set in the posterboardd process, the method never re-reads from disk — no invalidation
+        // path exists. A respring is required if posterboardd already loaded (or failed to load)
+        // this plist in the current boot. Posting UnarchiveConfigurationStore may trigger a reload
+        // if posterboardd listens to it and re-creates its PRPosterPathModelObjectCache instances.
+        let notifRet = notify_post("com.apple.PosterBoard.UnarchiveConfigurationStore")
+        diag.append("notify_post(UnarchiveConfigurationStore): \(notifRet == 0 ? "OK" : "err \(notifRet)")")
+        diag.append("NOTE: if font unchanged after lock/unlock → RESPRING required (write-once cache)")
+        diag.append("NOTE: if respring+no-change → check syslog for sandboxd denial (Candidate 2)")
+        diag.append("NOTE: if respring+no-change+no-sandboxd → run inject12 first (Candidate 1: extensionBundleURL)")
+        diag.append("After respring: wide bold industrial digits (DIN) = PATH TRAVERSAL CONFIRMED")
         return pbSave(diag)
     }
 }
