@@ -28,6 +28,8 @@ struct SettingsView: View {
     @State var injectingV10: Bool = false
     @State var probingV11:   Bool = false
     @State var injectingV11: Bool = false
+    @State var probingV12:   Bool = false
+    @State var injectingV12: Bool = false
     
     var body: some View {
         List {
@@ -131,6 +133,74 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Probe v12 — deep NSKA (class+value) + font-path gadget + SQLite write probe
+                Button(action: {
+                    guard !probingV12 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    probingV12 = true
+                    UIApplication.shared.alert(
+                        title: "Probe v12…",
+                        body: "Deep NSKA dump + font-loading binary search + SQLite write probe.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.probe12()
+                        DispatchQueue.main.async {
+                            probingV12 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            showProbeOutput = true
+                        }
+                    }
+                }) {
+                    HStack {
+                        if probingV12 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "magnifyingglass.circle.fill")
+                        }
+                        Text(probingV12 ? "Probing v12…" : "Probe v12 (deep-NSKA + font-path)")
+                    }
+                }
+                .foregroundStyle(.indigo)
+                .disabled(probingV12)
+
+                // Inject v12 — PRPosterSystemTimeFontConfiguration (isSystemItem=false, fontPath)
+                Button(action: {
+                    guard !injectingV12 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV12 = true
+                    UIApplication.shared.alert(
+                        title: "Inject v12…",
+                        body: "PRPosterSystemTimeFontConfiguration isSystemItem=false + font probe file.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject12()
+                        DispatchQueue.main.async {
+                            injectingV12 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            showProbeOutput = true
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV12 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "bolt.fill")
+                        }
+                        Text(injectingV12 ? "Injecting v12…" : "Inject v12 (SystemFontConfig)")
+                    }
+                }
+                .foregroundStyle(.red)
+                .disabled(injectingV12)
 
                 // Probe v11 — ClockPoster contents/ deep scan + PFPosterDescriptor key dump +
                 //              binary NSExpression/predicate string search + SQLite blob decode
