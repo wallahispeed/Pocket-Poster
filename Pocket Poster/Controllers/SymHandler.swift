@@ -3819,17 +3819,39 @@ class SymHandler {
         diag.append("  fontPostScriptName: pp-probe-13")
         diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
 
-        // FileManager.fileExists returns false for /System/Library/Fonts/ from the app sandbox —
-        // that doesn't mean the files are absent; posterboardd runs with broader permissions.
-        // Canary: Georgia serif. Digit 0-9 glyphs have small serifs at stroke ends — completely
-        // different from SF Pro / Helvetica Neue at a glance on the lock screen.
-        // If this path is wrong posterboardd falls back to its default; try next candidate build.
+        // Enumerate actual font files on this device using opendir() — lower-level than
+        // FileManager so it gets through where the higher-level API is sandbox-blocked.
+        let fontDirs = [
+            "/System/Library/Fonts",
+            "/System/Library/Fonts/Core",
+            "/System/Library/Fonts/Cache",
+            "/Library/Fonts",
+        ]
+        for fontDir in fontDirs {
+            if let dp = opendir(fontDir) {
+                defer { closedir(dp) }
+                var names: [String] = []
+                while let ent = readdir(dp) {
+                    let name = withUnsafeBytes(of: ent.pointee.d_name) {
+                        String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
+                    }
+                    if name.hasSuffix(".ttf") || name.hasSuffix(".ttc") || name.hasSuffix(".otf") {
+                        names.append(name)
+                    }
+                }
+                diag.append("\(fontDir): \(names.sorted().joined(separator: " "))")
+            } else {
+                diag.append("\(fontDir): opendir EACCES(\(errno))")
+            }
+        }
+
+        // Keep Georgia as the current canary attempt while we wait for the directory listing.
         let canaryPS  = "Georgia"
         let canaryRel = "System/Library/Fonts/Georgia.ttf"
         _PP13CustomFontConfigProxy.fontPostScriptName = canaryPS
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + canaryRel
         let payload13sys = payloadTitleStyleCustomFont13
-        diag.append("payload13sys (Georgia serif canary): \(payload13sys.count)b")
+        diag.append("payload13sys (Georgia canary): \(payload13sys.count)b")
         p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
         let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
