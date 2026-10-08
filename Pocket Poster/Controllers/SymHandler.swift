@@ -2093,6 +2093,7 @@ class SymHandler {
     // PosterKit class name + full superclass hierarchy, while encode(with:) writes
     // exactly the CodingKeys we observed from real posterboardd-written files.
 
+    @objc(_PP7MetaProxy)
     private class _MetaProxy: NSObject, NSCoding {
         override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterMetadata") ?? type(of: self) }
         override init() { super.init() }
@@ -2102,6 +2103,7 @@ class SymHandler {
         }
     }
 
+    @objc(_PP7RenderingProxy)
     private class _RenderingProxy: NSObject, NSCoding {
         override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterRenderingConfiguration") ?? type(of: self) }
         override init() { super.init() }
@@ -2112,40 +2114,43 @@ class SymHandler {
         }
     }
 
+    @objc(_PP7TimeFontProxy)
     private class _TimeFontProxy: NSObject, NSCoding {
         override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterSystemTimeFontConfiguration") ?? type(of: self) }
         override init() { super.init() }
         required init?(coder: NSCoder) { super.init() }
         func encode(with coder: NSCoder) {
-            coder.encode(true,   forKey: "isSystemItem")
-            coder.encode("",    forKey: "timeFontIdentifier")
+            coder.encode(true,     forKey: "isSystemItem")
+            coder.encode("",      forKey: "timeFontIdentifier")
             coder.encode(Float(0), forKey: "weight")
         }
     }
 
+    @objc(_PP7TitleStyleProxy)
     private class _TitleStyleProxy: NSObject, NSCoding {
         let fontProxy = _TimeFontProxy()
         override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self) }
         override init() { super.init() }
         required init?(coder: NSCoder) { super.init() }
         func encode(with coder: NSCoder) {
-            coder.encode(false,      forKey: "alternateDateEnabled")
-            coder.encode(Double(0.5),forKey: "contentsLuminence")
-            coder.encode("",         forKey: "groupName")
-            coder.encode(false,      forKey: "isAdaptiveTimeHeightUserConfigured")
-            coder.encode(Double(0),  forKey: "preferredTimeMaxY")
-            coder.encode(Double(0),  forKey: "preferredTimeMaxYLandscape")
-            coder.encode(Int64(0),   forKey: "preferredTitleAlignment")
-            coder.encode(Int64(0),   forKey: "preferredTitleLayout")
-            coder.encode(fontProxy,  forKey: "timeFontConfiguration")
-            coder.encode("",         forKey: "timeNumberingSystem")
+            coder.encode(false,       forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5), forKey: "contentsLuminence")
+            coder.encode("",          forKey: "groupName")
+            coder.encode(false,       forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),    forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),    forKey: "preferredTitleLayout")
+            coder.encode(fontProxy,   forKey: "timeFontConfiguration")
+            coder.encode("",          forKey: "timeNumberingSystem")
             // titleColor omitted (nil — nullable UIColor)
-            coder.encode(Int64(0),   forKey: "titleContentStyle")
-            coder.encode(false,      forKey: "userConfigured")
-            coder.encode(Int64(1),   forKey: "version")
+            coder.encode(Int64(0),    forKey: "titleContentStyle")
+            coder.encode(false,       forKey: "userConfigured")
+            coder.encode(Int64(1),    forKey: "version")
         }
     }
 
+    @objc(_PP7ComplicationProxy)
     private class _ComplicationProxy: NSObject, NSCoding {
         override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
         override init() { super.init() }
@@ -2158,6 +2163,7 @@ class SymHandler {
         }
     }
 
+    @objc(_PP7QuickActionsProxy)
     private class _QuickActionsProxy: NSObject, NSCoding {
         override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterQuickActionsConfiguration") ?? type(of: self) }
         override init() { super.init() }
