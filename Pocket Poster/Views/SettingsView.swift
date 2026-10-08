@@ -26,6 +26,8 @@ struct SettingsView: View {
     @State var injectingV8: Bool = false
     @State var injectingV9: Bool = false
     @State var injectingV10: Bool = false
+    @State var probingV11:   Bool = false
+    @State var injectingV11: Bool = false
     
     var body: some View {
         List {
@@ -129,6 +131,81 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Probe v11 — ClockPoster contents/ deep scan + PFPosterDescriptor key dump +
+                //              binary NSExpression/predicate string search + SQLite blob decode
+                Button(action: {
+                    guard !probingV11 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    probingV11 = true
+                    UIApplication.shared.alert(
+                        title: "Probe v11…",
+                        body: "ClockPoster contents/ scan + gadget key dumps + binary pattern search.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.probe11()
+                        DispatchQueue.main.async {
+                            probingV11 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if probingV11 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "magnifyingglass.circle")
+                        }
+                        Text(probingV11 ? "Probing v11…" : "Probe v11 (ClockPoster+gadget keys)")
+                    }
+                }
+                .foregroundStyle(.purple)
+                .disabled(probingV11)
+
+                // Inject v11 — NSFunctionExpression/KVC as timeFontConfiguration +
+                //              PRComplicationDescriptor with app bundle ID +
+                //              ClockPoster contents/ path targeting
+                Button(action: {
+                    guard !injectingV11 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV11 = true
+                    UIApplication.shared.alert(
+                        title: "Inject v11…",
+                        body: "NSFunctionExpression + PRComplicDesc + ClockPoster contents/ targeting.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject11()
+                        DispatchQueue.main.async {
+                            injectingV11 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV11 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "bolt.trianglebadge.exclamationmark")
+                        }
+                        Text(injectingV11 ? "Injecting v11…" : "Inject v11 (funcExpr+ClockPoster)")
+                    }
+                }
+                .foregroundStyle(.red)
+                .disabled(injectingV11)
 
                 // Inject v10 — type-confusion probe: NSExpression as timeFontConfiguration (full NSCoding object)
                 //              + PFPosterDescriptor as complications

