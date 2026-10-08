@@ -1366,7 +1366,7 @@ class SymHandler {
                                 let sz = sqlite3_column_bytes(rowStmt, i)
                                 var tag = "[blob \(sz)b]"
                                 if sz >= 6, let ptr = sqlite3_column_blob(rowStmt, i) {
-                                    let hdr = Data(bytes: ptr, count: min(8, sz))
+                                    let hdr = Data(bytes: ptr, count: min(8, Int(sz)))
                                     let hdrHex = hdr.map { String(format: "%02x", $0) }.joined()
                                     tag += " hdr=\(hdrHex)"
                                     if String(data: hdr.prefix(6), encoding: .ascii) == "bplist" {
@@ -1396,7 +1396,9 @@ class SymHandler {
                             var injectStmt: OpaquePointer?
                             if sqlite3_prepare_v2(db, injectSQL, -1, &injectStmt, nil) == SQLITE_OK {
                                 payload.withUnsafeBytes { buf in
-                                    sqlite3_bind_blob(injectStmt, 1, buf.baseAddress, Int32(payload.count), SQLITE_TRANSIENT)
+                                    // SQLITE_TRANSIENT = (sqlite3_destructor_type)-1 — not bridged as Swift constant
+                                    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                                    sqlite3_bind_blob(injectStmt, 1, buf.baseAddress, Int32(payload.count), transient)
                                 }
                                 let rc = sqlite3_step(injectStmt)
                                 let affected = sqlite3_changes(db)
