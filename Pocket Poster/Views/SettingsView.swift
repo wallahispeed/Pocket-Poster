@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State var triggeringDecode: Bool = false
     @State var probingV7: Bool = false
     @State var injectingV7: Bool = false
+    @State var injectingV8: Bool = false
     
     var body: some View {
         List {
@@ -126,6 +127,42 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Inject v8 — class-matched all providers + NSDictionary probe on WallpaperKit complication
+                Button(action: {
+                    guard !injectingV8 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV8 = true
+                    UIApplication.shared.alert(
+                        title: "Inject v8…",
+                        body: "Fixing clock + probing decode security on WallpaperKit complication.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject8()
+                        DispatchQueue.main.async {
+                            injectingV8 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV8 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "shield.lefthalf.filled")
+                        }
+                        Text(injectingV8 ? "Injecting v8…" : "Inject v8 (decode probe)")
+                    }
+                }
+                .foregroundStyle(.indigo)
+                .disabled(injectingV8)
 
                 // Inject v7 — write class-matched payloads to WallpaperKit instance files
                 Button(action: {
