@@ -2871,7 +2871,9 @@ class SymHandler {
             // Try factory with our bundle URL
             if nsObj.responds(to: bundleSel) {
                 let ourURL = Bundle.main.bundleURL as NSURL
-                if let cfgObj = nsObj.perform(bundleSel, with: nil, with: ourURL, with: false)?.takeUnretainedValue() {
+                typealias _CfgFn = @convention(c) (AnyObject, Selector, AnyObject?, AnyObject, Bool) -> Unmanaged<AnyObject>?
+                let _cfgFn = unsafeBitCast(objc_msgSend, to: _CfgFn.self)
+                if let cfgObj = _cfgFn(nsObj, bundleSel, nil, ourURL, false)?.takeUnretainedValue() {
                     let arch = NSKeyedArchiver(requiringSecureCoding: false)
                     arch.encode(cfgObj, forKey: NSKeyedArchiveRootObjectKey)
                     arch.finishEncoding()
@@ -2886,10 +2888,10 @@ class SymHandler {
                 if let sCls = NSClassFromString("PRPosterSystemTimeFontConfiguration") as? NSObject.Type {
                     let initSel = NSSelectorFromString("initWithTimeFontIdentifier:weight:systemItem:")
                     if sCls.instancesRespond(to: initSel) {
-                        let sObj = sCls.alloc()
-                        if let built = sObj.perform(initSel, with: "pp_probe_font_id",
-                                                    with: NSNumber(value: 0.0),
-                                                    with: NSNumber(value: false))?.takeUnretainedValue() {
+                        typealias _AllocFn = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>
+                        let sAlloc = unsafeBitCast(objc_msgSend, to: _AllocFn.self)(sCls, NSSelectorFromString("alloc")).takeRetainedValue()
+                        typealias _InitFn = @convention(c) (AnyObject, Selector, AnyObject, AnyObject, Bool) -> Unmanaged<AnyObject>?
+                        if let built = unsafeBitCast(objc_msgSend, to: _InitFn.self)(sAlloc, initSel, "pp_probe_font_id" as NSString, NSNumber(value: 0.0), false)?.takeUnretainedValue() {
                             let arch = NSKeyedArchiver(requiringSecureCoding: false)
                             arch.encode(built, forKey: NSKeyedArchiveRootObjectKey)
                             arch.finishEncoding()
