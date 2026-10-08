@@ -68,48 +68,6 @@
     UIPasteboard.generalPasteboard.string = self.textView.text;
 }
 
-// ── Runtime class scanner ─────────────────────────────────────────────────────
-// Returns the first class instance that responds to the import selector,
-// plus fills classListOut with all PRS*/PF*/PBS* class names found.
-- (id)findImportClassWithSel:(SEL)importSel altSel:(SEL)importSel2
-                outClassName:(NSString **)outName
-               classListOut:(NSMutableString *)listOut {
-    int total = objc_getClassList(NULL, 0);
-    if (total <= 0) return nil;
-
-    __unsafe_unretained Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * (size_t)total);
-    objc_getClassList(classes, total);
-
-    id found = nil;
-    NSString *foundName = nil;
-
-    for (int i = 0; i < total; i++) {
-        const char *cname = class_getName(classes[i]);
-        if (!cname) continue;
-        // Only look at PRS*, PF*, PBS* classes (our target frameworks)
-        if (strncmp(cname, "PRS", 3) != 0 &&
-            strncmp(cname, "PF", 2) != 0 &&
-            strncmp(cname, "PBS", 3) != 0) continue;
-
-        BOOL hasImport = ([classes[i] instancesRespondToSelector:importSel] ||
-                          [classes[i] instancesRespondToSelector:importSel2]);
-        [listOut appendFormat:@"  %s%@\n", cname, hasImport ? @" ← IMPORT" : @""];
-
-        if (hasImport && !found) {
-            @try {
-                found = [[classes[i] alloc] init];
-                foundName = [NSString stringWithUTF8String:cname];
-            } @catch (...) {
-                found = nil;
-            }
-        }
-    }
-    free(classes);
-
-    if (outName) *outName = foundName;
-    return found;
-}
-
 // ── Core test runner ──────────────────────────────────────────────────────────
 
 - (NSString *)runAllTests {
@@ -123,7 +81,7 @@
     [out appendFormat:@"  PosterFoundation:    %@\n", pfHandle  ? @"✓" : [NSString stringWithUTF8String:dlerror()]];
     [out appendFormat:@"  PosterBoardServices: %@\n\n", pbsHandle ? @"✓" : [NSString stringWithUTF8String:dlerror()]];
 
-    // 2. Named class check (informational — no abort)
+    // 2. Named class check
     [out appendString:@"[2] Named class check\n"];
     NSArray *classNames = @[
         @"PRSPosterConfiguration", @"PFPosterPath",
@@ -131,6 +89,7 @@
         @"PRSService",             @"PRSConnection",
         @"PRSServer",              @"PRSClient",
         @"PRSXPCConnection",       @"PRSServiceConnection",
+        @"PRSPosterService",       @"PRSPosterConnection",
     ];
     for (NSString *cn in classNames) {
         Class cls = NSClassFromString(cn);
@@ -138,24 +97,39 @@
     }
     [out appendString:@"\n"];
 
-    // 3. Runtime scan — find all PRS*/PF*/PBS* classes & which one has import
-    [out appendString:@"[3] Runtime class scan (PRS*/PF*/PBS*)\n"];
+    // 3. Runtime class scan — NO alloc/init, just list names + mark import method
+    [out appendString:@"[3] Runtime scan (PRS*/PF*/PBS* classes)\n"];
     SEL importSel  = NSSelectorFromString(@"importPosterConfigurationFromArchiveData:completion:");
     SEL importSel2 = NSSelectorFromString(@"importPosterConfigurationFromArchivedData:completion:");
-    NSMutableString *classList = [NSMutableString string];
-    NSString *importClassName = nil;
-    id importObj = [self findImportClassWithSel:importSel altSel:importSel2
-                                   outClassName:&importClassName
-                                  classListOut:classList];
-    [out appendString:classList];
-    if (importClassName) {
-        [out appendFormat:@"  → import method on: %@\n", importClassName];
-    } else {
-        [out appendString:@"  → import method NOT FOUND on any class\n"];
+
+    int total = objc_getClassList(NULL, 0);
+    [out appendFormat:@"  total loaded classes: %d\n", total];
+    if (total > 0) {
+        __unsafe_unretained Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * (size_t)total);
+        if (classes) {
+            objc_getClassList(classes, total);
+            for (int i = 0; i < total; i++) {
+                const char *cname = class_getName(classes[i]);
+                if (!cname) continue;
+                if (strncmp(cname, "PRS", 3) != 0 &&
+                    strncmp(cname, "PBS", 3) != 0 &&
+                    strncmp(cname, "PF", 2)  != 0) continue;
+                // Skip Swift mangled names
+                if (strncmp(cname, "_TtC", 4) == 0) continue;
+
+                BOOL hasImportA = [classes[i] instancesRespondToSelector:importSel];
+                BOOL hasImportB = [classes[i] instancesRespondToSelector:importSel2];
+                NSString *tag = @"";
+                if (hasImportA) tag = @" ← importPosterConfigurationFromArchiveData:";
+                else if (hasImportB) tag = @" ← importPosterConfigurationFromArchivedData:";
+                [out appendFormat:@"  %s%@\n", cname, tag];
+            }
+            free(classes);
+        }
     }
     [out appendString:@"\n"];
 
-    // 4. Load payload files from app bundle
+    // 4. Load payload files
     [out appendString:@"[4] Payload files\n"];
     NSData *basePayload   = [self loadPayload:@"payload_pfposterpath"       ext:@"keyed" out:out];
     NSData *serverPayload = [self loadPayload:@"payload_pfserverposterpath" ext:@"keyed" out:out];
@@ -167,17 +141,44 @@
     if (serverPayload) [self decodePayload:serverPayload label:@"server" out:out];
     [out appendString:@"\n"];
 
-    // 6. decodeFromPersistableRepresentation:error:
+    // 6. PF decodeFromPersistableRepresentation:error:
     [out appendString:@"[6] PF decodeFromPersistableRepresentation:\n"];
     if (basePayload) [self decodeViaPF:basePayload out:out];
     [out appendString:@"\n"];
 
-    // 7. XPC import attempt via the discovered class (expect entitlement error)
-    [out appendString:@"[7] XPC import attempt (expect entitlement error)\n"];
-    if (!importObj) {
-        [out appendString:@"  skipped — no class with import method found\n"];
-    } else if (basePayload) {
-        [self tryXPCImport:basePayload onObject:importObj selA:importSel selB:importSel2 out:out];
+    // 7. XPC import attempt on known candidate classes (safe — no unknown alloc/init)
+    [out appendString:@"[7] XPC import attempt\n"];
+    if (basePayload) {
+        // Try each candidate; stop on first that responds to the selector
+        NSArray *candidates = @[@"PRSServer", @"PRSService", @"PRSConnection",
+                                @"PRSClient", @"PRSXPCConnection", @"PRSPosterService"];
+        BOOL tried = NO;
+        for (NSString *cn in candidates) {
+            Class cls = NSClassFromString(cn);
+            if (!cls) continue;
+            id obj = nil;
+            @try { obj = [[cls alloc] init]; } @catch (NSException *e) {
+                [out appendFormat:@"  %@: alloc/init threw %@\n", cn, e.name];
+                continue;
+            }
+            if (!obj) {
+                [out appendFormat:@"  %@: alloc/init returned nil\n", cn];
+                continue;
+            }
+            SEL sel = [obj respondsToSelector:importSel] ? importSel :
+                      [obj respondsToSelector:importSel2] ? importSel2 : NULL;
+            if (!sel) {
+                [out appendFormat:@"  %@: no import selector\n", cn];
+                continue;
+            }
+            [out appendFormat:@"  → using %@ . %s\n", cn, sel_getName(sel)];
+            [self tryXPCImport:basePayload onObject:obj importSel:sel out:out];
+            tried = YES;
+            break;
+        }
+        if (!tried) {
+            [out appendString:@"  no candidate class was instantiable\n"];
+        }
     }
     [out appendString:@"\n"];
 
@@ -270,26 +271,13 @@
     }
 }
 
-- (void)tryXPCImport:(NSData *)data
-            onObject:(id)conn
-                selA:(SEL)selA
-                selB:(SEL)selB
-                 out:(NSMutableString *)out {
-    SEL importSel = [conn respondsToSelector:selA] ? selA : selB;
-    if (![conn respondsToSelector:importSel]) {
-        [out appendFormat:@"  neither import selector found on %@\n",
-             NSStringFromClass([conn class])];
-        return;
-    }
-    [out appendFormat:@"  calling [%@ %s]\n",
-         NSStringFromClass([conn class]), sel_getName(importSel)];
-
+- (void)tryXPCImport:(NSData *)data onObject:(id)conn importSel:(SEL)importSel out:(NSMutableString *)out {
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
     __block NSString *resultStr = @"(timeout after 5s)";
 
     void (^completion)(id, NSError *) = ^(id result, NSError *error) {
         if (error) {
-            resultStr = [NSString stringWithFormat:@"✗ error: %@\n    domain=%@ code=%ld\n    userInfo=%@",
+            resultStr = [NSString stringWithFormat:@"✗ %@\n    domain=%@ code=%ld\n    userInfo=%@",
                          error.localizedDescription, error.domain, (long)error.code, error.userInfo];
         } else if (result) {
             resultStr = [NSString stringWithFormat:@"✓ SUCCESS → %@", NSStringFromClass([result class])];
@@ -308,7 +296,7 @@
 
     @try { [inv invoke]; }
     @catch (NSException *e) {
-        [out appendFormat:@"  exception: %@\n", e.reason];
+        [out appendFormat:@"  XPC exception: %@\n", e.reason];
         return;
     }
 
