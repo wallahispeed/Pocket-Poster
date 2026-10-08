@@ -1,0 +1,68 @@
+name: Build Probe IPA (poster-probe branch)
+
+on:
+  push:
+    branches: [poster-probe]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: build-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          ls /Applications | grep -i Xcode || true
+          XCODE=$(ls /Applications/ | grep -E "^Xcode_1[6-9]|^Xcode_2" | sort -V | tail -1)
+          if [ -n "$XCODE" ]; then
+            echo "Selecting Xcode: $XCODE"
+            sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          else
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
+          xcodebuild -version
+
+      - name: Inject PhysicsWallpaperExtension
+        run: python3 inject_physics_widget.py
+
+      - name: Resolve packages
+        run: |
+          xcodebuild -project "Pocket Poster.xcodeproj" \
+            -scheme "Pocket Poster" \
+            -resolvePackageDependencies
+
+      - name: Build IPA
+        run: |
+          chmod +x ./ipabuild.sh
+          ./ipabuild.sh
+
+      - name: Prepare artifact
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            "build/DerivedDataApp/Build/Products/Release-iphoneos/Pocket Poster.app/Info.plist" 2>/dev/null \
+            || grep -m1 'MARKETING_VERSION' "Pocket Poster.xcodeproj/project.pbxproj" | sed 's/[^0-9.]//g')
+          SHA="${{ github.sha }}"
+          SHORT="${SHA:0:7}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SHORT_SHA=$SHORT" >> "$GITHUB_ENV"
+          test -f "build/Pocket_Poster.ipa" || cp "build/Pocket Poster.ipa" "build/Pocket_Poster.ipa"
+          ls -lh build/*.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketPoster-probe-${{ env.VERSION }}-${{ env.SHORT_SHA }}
+          path: build/Pocket_Poster.ipa
+          if-no-files-found: error
+          retention-days: 30

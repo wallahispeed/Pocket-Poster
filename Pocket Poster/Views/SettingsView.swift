@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import UIKit
 
 struct SettingsView: View {
     // Prefs
@@ -18,8 +17,8 @@ struct SettingsView: View {
     @State var hashCheckTask: Task<Void, any Error>? = nil
     @State var detectingOnDevice: Bool = false
     @State var probingPosterboardd: Bool = false
-    @State var probeShareItems: [Any] = []
-    @State var showProbeShare: Bool = false
+    @State var probeOutput: String = ""
+    @State var showProbeOutput: Bool = false
     
     var body: some View {
         List {
@@ -140,11 +139,8 @@ struct SettingsView: View {
                         DispatchQueue.main.async {
                             probingPosterboardd = false
                             UIApplication.shared.dismissAlert(animated: true)
-                            // Save to Documents and offer share
-                            let diagURL = SymHandler.getLCDocumentsDirectory()
-                                .appendingPathComponent("pp_posterboardd_diag.txt")
-                            probeShareItems = [output as Any, diagURL]
-                            showProbeShare = true
+                            probeOutput = output
+                            showProbeOutput = true
                             Haptic.shared.notify(.success)
                         }
                     }
@@ -160,8 +156,8 @@ struct SettingsView: View {
                 }
                 .foregroundStyle(.orange)
                 .disabled(probingPosterboardd)
-                .sheet(isPresented: $showProbeShare) {
-                    ShareSheet(items: probeShareItems)
+                .sheet(isPresented: $showProbeOutput) {
+                    ProbeOutputView(output: probeOutput)
                 }
             } header: {
                 Label("Actions", systemImage: "gear")
@@ -316,10 +312,3 @@ struct SettingsView: View {
     }
 }
 
-struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
-}
