@@ -1936,7 +1936,7 @@ class SymHandler {
 
     @discardableResult
     static func probe7() -> String {
-        var diag = ["=== PosterboarddProbe v7c \(Date()) iOS 26.5 ==="]
+        var diag = ["=== PosterboarddProbe v7d \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
         let uuid: String
         do { uuid = try BadQuery.findPosterBoardHash() } catch {
@@ -1972,89 +1972,118 @@ class SymHandler {
             diag.append("  \(cn): \(found ? "FOUND" : "nil")")
         }
 
-        // Open extBase FIRST — must stay open for all subsequent BadQuery operations
+        // Open extBase using the EXACT same hierarchy as p6FullVersionTree
         guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
             diag.append("extBase NOACCESS"); return pbSave(diag)
         }
         defer { extBaseH.release() }
+        // Must call contentsOfDirectory AFTER consuming — same as probe6
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+        diag.append("extBase: \(allExts.count) extensions listed")
 
-        // [C] Read v1 PRPosterMetadata bplist from ClockPoster (file lives in versions/1/contents/)
-        diag.append("\n[C] v1 PRPosterMetadata archive structure:")
-        let clockConfigsPath = extBase + "/com.apple.ClockPoster.ClockPosterExtension/configurations"
-        var dumpedC = false
-        if let ccH = try? BadQuery.consume(path: clockConfigsPath, create: true) {
-            defer { ccH.release() }
-            let clockCfgs = ["87681D1B", "0C4D8DC9", "40711E83", "5B719548", "429555FB"]
-            for cfg in clockCfgs {
-                let versPath = clockConfigsPath + "/\(cfg)/versions"
-                guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
-                defer { versH.release() }
-                let v1Path = versPath + "/1"
-                guard let v1H = try? BadQuery.consume(path: v1Path, create: true) else { continue }
-                defer { v1H.release() }
-                let contentsPath = v1Path + "/contents"
-                guard let contH = try? BadQuery.consume(path: contentsPath, create: true) else { continue }
-                defer { contH.release() }
-                let metaPath = contentsPath + "/com.apple.posterkit.provider.contents.otherMetadata.plist"
-                guard let fH = try? BadQuery.consume(path: metaPath, create: true),
-                      let data = fm.contents(atPath: metaPath), data.count > 0 else { continue }
-                fH.release()
-                diag.append("  cfg=\(cfg) v1/contents/otherMetadata \(data.count)b")
-                p7DumpNSKAKeys(data: data, indent: "  ", diag: &diag)
-                dumpedC = true
-                break
-            }
-        }
-        if !dumpedC { diag.append("  no v1 clock config readable") }
-        diag.append("  [our PRSPosterConfiguration payload for comparison]")
-        p7DumpNSKAKeys(data: posterboarddPayloadBase, indent: "  ", diag: &diag)
+        // [C] Scan ALL extensions for non-PRSPosterConfiguration otherMetadata (real PRPosterMetadata)
+        // Also scan WallpaperKit for RuntimeSnapshotMetadata and instance files
+        diag.append("\n[C] Scanning all versions for real PRPosterMetadata + WallpaperKit files:")
+        var foundRealMeta = false
+        let instanceFileShorts: [(String, String)] = [
+            ("titleStyle",    "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"),
+            ("rendering",     "com.apple.posterkit.provider.instance.renderingConfiguration.plist"),
+            ("complication",  "com.apple.posterkit.provider.instance.complicationLayout.plist"),
+            ("quickActions",  "com.apple.posterkit.provider.instance.quickActions.plist"),
+        ]
+        for extName in allExts where !extName.hasPrefix(".") {
+            let isClockPoster  = extName.contains("ClockPoster")
+            let isWallpaperKit = extName.contains("WallpaperKit")
+            let isAmbient      = extName.contains("PhotosAmbient")
+            guard isClockPoster || isWallpaperKit || isAmbient else { continue }
 
-        // [D] + [F]: WallpaperKit v0 — RuntimeSnapshotMetadata XML + instance files
-        let wkConfigsPath = extBase + "/com.apple.WallpaperKit.CollectionsPoster/configurations"
-        if let wkccH = try? BadQuery.consume(path: wkConfigsPath, create: true) {
-            defer { wkccH.release() }
-            for wkCfg in ["4D42F4D1", "1F51F085"] {
-                let versPath = wkConfigsPath + "/\(wkCfg)/versions"
-                guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
-                defer { versH.release() }
-                let v0Path = versPath + "/0"
-                guard let v0H = try? BadQuery.consume(path: v0Path, create: true) else { continue }
-                defer { v0H.release() }
+            for subdir in ["configurations", "staticdescriptors"] {
+                let sdPath = "\(extBase)/\(extName)/\(subdir)"
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sdH.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for cfg in configs where !cfg.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(cfg)/versions"
+                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { versH.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        defer { vH.release() }
+                        let vItems = (try? fm.contentsOfDirectory(atPath: vPath)) ?? []
 
-                // [D] RuntimeSnapshotMetadata-lock.plist (XML, lives directly in v0/)
-                diag.append("\n[D] RuntimeSnapshotMetadata-lock (cfg=\(wkCfg)):")
-                let snapPath = v0Path + "/RuntimeSnapshotMetadata-lock.plist"
-                if let fH = try? BadQuery.consume(path: snapPath, create: true),
-                   let data = fm.contents(atPath: snapPath),
-                   let text = String(data: data, encoding: .utf8) {
-                    fH.release()
-                    diag.append("  \(data.count)b:")
-                    diag.append(String(text.prefix(4000)))
-                } else { diag.append("  not readable") }
+                        // [C] Look for otherMetadata.plist (could be in vPath directly or in contents/)
+                        if !foundRealMeta {
+                            for sub in ["", "contents"] {
+                                let base = sub.isEmpty ? vPath : "\(vPath)/\(sub)"
+                                var baseH: AnyObject? = nil
+                                if !sub.isEmpty {
+                                    guard let bh = try? BadQuery.consume(path: base, create: true) else { continue }
+                                    baseH = bh as AnyObject
+                                    _ = (try? fm.contentsOfDirectory(atPath: base)) ?? []
+                                }
+                                let metaPath = base + "/com.apple.posterkit.provider.contents.otherMetadata.plist"
+                                if let mH = try? BadQuery.consume(path: metaPath, create: true),
+                                   let data = fm.contents(atPath: metaPath), data.count > 0 {
+                                    mH.release()
+                                    // Check if this is a REAL class (not our PRSPosterConfiguration injection)
+                                    if let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+                                       let objects = pl["$objects"] as? [Any] {
+                                        var rootCls = "?"
+                                        for obj in objects {
+                                            if let d = obj as? [String: Any],
+                                               let cls = d["$classes"] as? [Any],
+                                               let first = cls.first as? String, first != "NSObject" {
+                                                rootCls = first; break
+                                            }
+                                        }
+                                        if !rootCls.contains("PRSPosterConfiguration") {
+                                            diag.append("  FOUND real otherMetadata: \(extName.prefix(40))/\(subdir)/\(cfg)/v\(ver) root=\(rootCls) \(data.count)b")
+                                            p7DumpNSKAKeys(data: data, indent: "  ", diag: &diag)
+                                            foundRealMeta = true
+                                        }
+                                    }
+                                }
+                                if let bh = baseH as? BadQueryHandle { bh.release() }
+                            }
+                        }
 
-                // [F] Instance-level plist files (also directly in v0/)
-                diag.append("\n[F] \(wkCfg) v0 instance files:")
-                let iFileMap: [(String, String)] = [
-                    ("titleStyle", "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"),
-                    ("rendering",  "com.apple.posterkit.provider.instance.renderingConfiguration.plist"),
-                    ("complication","com.apple.posterkit.provider.instance.complicationLayout.plist"),
-                    ("quickActions","com.apple.posterkit.provider.instance.quickActions.plist"),
-                ]
-                for (short, iFile) in iFileMap {
-                    let iPath = v0Path + "/" + iFile
-                    guard let ifH = try? BadQuery.consume(path: iPath, create: true),
-                          let iData = fm.contents(atPath: iPath) else {
-                        diag.append("  \(short): NOACCESS"); continue
+                        // [D] RuntimeSnapshotMetadata-lock.plist (WallpaperKit only)
+                        if isWallpaperKit && vItems.contains("RuntimeSnapshotMetadata-lock.plist") {
+                            let snapPath = vPath + "/RuntimeSnapshotMetadata-lock.plist"
+                            if let sH = try? BadQuery.consume(path: snapPath, create: true),
+                               let data = fm.contents(atPath: snapPath),
+                               let text = String(data: data, encoding: .utf8) {
+                                sH.release()
+                                diag.append("\n[D] RuntimeSnapshotMetadata-lock \(extName.prefix(30))/\(cfg)/v\(ver) \(data.count)b:")
+                                diag.append(String(text.prefix(3000)))
+                            }
+                        }
+
+                        // [F] Instance files (WallpaperKit only)
+                        if isWallpaperKit {
+                            var foundAny = false
+                            for (short, iFile) in instanceFileShorts {
+                                let iPath = vPath + "/" + iFile
+                                guard let ifH = try? BadQuery.consume(path: iPath, create: true),
+                                      let iData = fm.contents(atPath: iPath) else { continue }
+                                ifH.release()
+                                if !foundAny {
+                                    diag.append("\n[F] WallpaperKit \(cfg)/v\(ver) instance files:")
+                                    foundAny = true
+                                }
+                                diag.append("  \(short): \(iData.count)b isOurs=\(iData.count == posterboarddPayloadBase.count)")
+                                p7DumpNSKAKeys(data: iData, indent: "    ", diag: &diag)
+                            }
+                        }
                     }
-                    ifH.release()
-                    diag.append("  \(short): \(iData.count)b isOurs=\(iData.count == posterboarddPayloadBase.count)")
-                    p7DumpNSKAKeys(data: iData, indent: "    ", diag: &diag)
                 }
-                break  // one WallpaperKit config is enough
             }
-        } else {
-            diag.append("wkConfigs NOACCESS")
         }
+        if !foundRealMeta { diag.append("  no real PRPosterMetadata found in any version") }
+        diag.append("\n[C-ref] our PRSPosterConfiguration payload:")
+        p7DumpNSKAKeys(data: posterboarddPayloadBase, indent: "  ", diag: &diag)
 
         return pbSave(diag)
     }
