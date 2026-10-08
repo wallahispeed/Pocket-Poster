@@ -207,7 +207,8 @@
     [inv setTarget:PRSPosterConfig];
     [inv setSelector:sel];
     [inv setArgument:&data atIndex:2];
-    NSError *err = nil;
+    // ARC requires __autoreleasing for NSError** passed through NSInvocation
+    NSError * __autoreleasing err = nil;
     NSError * __autoreleasing *ep = &err;
     [inv setArgument:&ep atIndex:3];
 

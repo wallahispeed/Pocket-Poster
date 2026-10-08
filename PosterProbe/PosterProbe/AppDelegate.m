@@ -9,7 +9,6 @@
 - (BOOL)application:(UIApplication *)application
     didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 
-    extern void *ViewControllerClass; // forward ref trick not needed
     Class vcClass = NSClassFromString(@"ViewController");
 
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];

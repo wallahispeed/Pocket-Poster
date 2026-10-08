@@ -4,7 +4,7 @@ on:
   push:
     paths:
       - 'PosterProbe/**'
-      - '.github/workflows/build.yml'
+      - '.github/workflows/build-posterprobe.yml'
   workflow_dispatch:
 
 jobs:
@@ -20,6 +20,7 @@ jobs:
       - name: Build (unsigned)
         run: |
           cd PosterProbe
+          set -o pipefail
           xcodebuild archive \
             -project PosterProbe.xcodeproj \
             -scheme PosterProbe \
@@ -29,7 +30,8 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
-            | xcpretty || true
+            OTHER_CODE_SIGN_FLAGS="--deep" \
+            2>&1
 
       - name: Package IPA
         run: |
