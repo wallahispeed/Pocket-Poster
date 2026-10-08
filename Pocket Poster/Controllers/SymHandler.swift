@@ -1947,11 +1947,11 @@ class SymHandler {
         diag.append("container: \(container)")
 
         // [A] Load PosterKit/WallpaperKit so their ObjC classes register
+        // NOTE: PosterBoard.framework excluded — its +load methods crash on bare dlopen
         diag.append("\n[A] Framework loads:")
         for fwPath in [
             "/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
             "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit",
-            "/System/Library/PrivateFrameworks/PosterBoard.framework/PosterBoard",
         ] {
             let h = dlopen(fwPath, RTLD_NOW | RTLD_GLOBAL)
             let name = (fwPath as NSString).lastPathComponent
@@ -2015,20 +2015,7 @@ class SymHandler {
         }
         if !dumpedD { diag.append("  not readable") }
 
-        // [E] alloc+init+encode each found class to reveal their own CodingKeys
-        diag.append("\n[E] Empty class archive structure (alloc+init in our process):")
-        for cn in foundClasses {
-            guard let cls = NSClassFromString(cn) as? NSObject.Type else { continue }
-            autoreleasepool {
-                let obj = cls.init()
-                if let data = try? NSKeyedArchiver.archivedData(withRootObject: obj, requiringSecureCoding: false) {
-                    diag.append("  \(cn): \(data.count)b")
-                    p7DumpNSKAKeys(data: data, indent: "    ", diag: &diag)
-                } else {
-                    diag.append("  \(cn): encode failed")
-                }
-            }
-        }
+        // [E] skipped — alloc+init on arbitrary framework classes raises ObjC exceptions Swift can't catch
 
         // [F] Confirm WallpaperKit v0 instance files — still our payload?
         diag.append("\n[F] WallpaperKit v0 instance files:")
