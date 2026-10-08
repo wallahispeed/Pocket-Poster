@@ -3843,13 +3843,6 @@ class SymHandler {
             }
         }
         diag.append("chosen canary: \(chosenPS) [\(chosenLabel)]")
-        let notable = UIFont.familyNames.sorted().filter {
-            let l = $0.lowercased()
-            return l.contains("courier") || l.contains("georgia") || l.contains("zapfino")
-                || l.contains("typewriter") || l.contains("times") || l.contains("baskerville")
-        }
-        if !notable.isEmpty { diag.append("UIFont notable: \(notable.joined(separator: ", "))") }
-
         _PP13CustomFontConfigProxy.fontPostScriptName = chosenPS
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = traversalPrefix + chosenRel
         let payload13sys = payloadTitleStyleCustomFont13
