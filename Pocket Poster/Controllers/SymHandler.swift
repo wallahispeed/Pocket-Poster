@@ -2818,6 +2818,33 @@ class SymHandler {
             diag.append("  PFPosterDescriptor: NSClassFromString FAIL")
         }
 
+        // [A2] Probe all interesting PosterKit/PF* classes via runtime
+        diag.append("\n[A2] Runtime class encode-dump (PosterKit classes):")
+        let probableClasses = [
+            "PRComplicationDescriptor", "PRPosterSystemTimeFontConfiguration",
+            "PRPosterTimeFontConfiguration", "PRPosterTitleStyleConfiguration",
+            "PRPosterComplicationLayout", "PRPosterRenderingConfiguration",
+            "PRPosterQuickActionsConfiguration", "PRSWidget",
+            "PFPosterDescriptor", "PFPosterPath", "PFPosterTemplate",
+            "PRPosterLayoutConfiguration", "PRSPosterConfiguration",
+        ]
+        for className in probableClasses {
+            guard let cls = NSClassFromString(className) as? NSObject.Type else {
+                diag.append("  \(className): NOTFOUND"); continue
+            }
+            let obj = cls.init()
+            let arch = NSKeyedArchiver(requiringSecureCoding: false)
+            arch.encodeRootObject(obj)
+            arch.finishEncoding()
+            let data = arch.encodedData
+            if data.count <= 8 {
+                diag.append("  \(className): empty archive (\(data.count)b)")
+            } else {
+                diag.append("  \(className) (\(data.count)b):")
+                p7DumpNSKAKeys(data: data, indent: "    ", diag: &diag)
+            }
+        }
+
         // [B] PRComplicationDescriptor runtime key dump
         diag.append("\n[B] PRComplicationDescriptor runtime key dump:")
         if let cls = NSClassFromString("PRComplicationDescriptor") as? NSObject.Type {
@@ -2929,8 +2956,17 @@ class SymHandler {
                         "NSExpression", "functionNamed", "expressionType", "classForCoder",
                         "isSystemItem", "uniqueIdentifier", "timeFontConfiguration",
                         "timeFontIdentifier", "complicationExtensionBundle",
-                        "DTCompanion", "dlsymFunc", "invokeUsingIMP"]
-        for binPath in ["/usr/libexec/posterboardd", "/usr/sbin/posterboardd"] {
+                        "DTCompanion", "dlsymFunc", "invokeUsingIMP",
+                        "applyFunction", "RBStrokeAccumulator", "initWithCoder",
+                        "decodeObjectFor", "requiresSecureCoding"]
+        // Search posterboardd binary AND PosterKit/WallpaperKit dylibs
+        let searchTargets: [String] = [
+            "/usr/libexec/posterboardd",
+            "/usr/sbin/posterboardd",
+            "/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+            "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit",
+        ]
+        for binPath in searchTargets {
             guard let bh = try? BadQuery.consume(path: binPath, create: true) else {
                 diag.append("  \(binPath): CONSUME FAIL"); continue
             }
@@ -2938,7 +2974,8 @@ class SymHandler {
             guard let data = fm.contents(atPath: binPath), data.count > 0 else {
                 diag.append("  \(binPath): READ FAIL"); continue
             }
-            diag.append("  \(binPath) (\(data.count) bytes):")
+            let shortName = (binPath as NSString).lastPathComponent
+            diag.append("  \(shortName) (\(data.count) bytes):")
             var cur: [UInt8] = []; var hits: [String: [String]] = [:]
             for byte in data {
                 if byte >= 32 && byte < 127 { cur.append(byte) }
@@ -2959,10 +2996,9 @@ class SymHandler {
                     diag.append("    \(term): NOT FOUND")
                 } else {
                     diag.append("    \(term): \(matches.count) hits")
-                    for m in matches.prefix(5) { diag.append("      → \(m.prefix(120))") }
+                    for m in matches.prefix(8) { diag.append("      → \(m.prefix(120))") }
                 }
             }
-            break
         }
     }
 
