@@ -25,6 +25,7 @@ struct SettingsView: View {
     @State var injectingV7: Bool = false
     @State var injectingV8: Bool = false
     @State var injectingV9: Bool = false
+    @State var injectingV10: Bool = false
     
     var body: some View {
         List {
@@ -128,6 +129,43 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Inject v10 — type-confusion probe: NSExpression as timeFontConfiguration (full NSCoding object)
+                //              + PFPosterDescriptor as complications
+                Button(action: {
+                    guard !injectingV10 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV10 = true
+                    UIApplication.shared.alert(
+                        title: "Inject v10…",
+                        body: "NSExpression as timeFontConfiguration — probing type confusion on clock render path.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject10()
+                        DispatchQueue.main.async {
+                            injectingV10 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV10 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "exclamationmark.triangle")
+                        }
+                        Text(injectingV10 ? "Injecting v10…" : "Inject v10 (type confusion)")
+                    }
+                }
+                .foregroundStyle(.red)
+                .disabled(injectingV10)
 
                 // Inject v9 — gadget probe: NSExpression / PFPosterDescriptor / PFPosterPath as complications
                 //             + NSString probe on timeFontConfiguration key

