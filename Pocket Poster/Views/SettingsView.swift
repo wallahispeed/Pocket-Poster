@@ -22,6 +22,7 @@ struct SettingsView: View {
     @State var probingV6: Bool = false
     @State var triggeringDecode: Bool = false
     @State var probingV7: Bool = false
+    @State var injectingV7: Bool = false
     
     var body: some View {
         List {
@@ -125,6 +126,42 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Inject v7 — write class-matched payloads to WallpaperKit instance files
+                Button(action: {
+                    guard !injectingV7 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV7 = true
+                    UIApplication.shared.alert(
+                        title: "Injecting v7…",
+                        body: "Writing class-matched payloads to WallpaperKit instance files.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject7()
+                        DispatchQueue.main.async {
+                            injectingV7 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV7 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "arrow.down.doc.fill")
+                        }
+                        Text(injectingV7 ? "Injecting v7…" : "Inject v7 (class-matched)")
+                    }
+                }
+                .foregroundStyle(.purple)
+                .disabled(injectingV7)
 
                 // Probe v7 — class introspection + NSKeyedArchive CodingKey extraction
                 Button(action: {

@@ -2088,6 +2088,180 @@ class SymHandler {
         return pbSave(diag)
     }
 
+    // MARK: - Payload proxy classes
+    // Each proxy overrides classForKeyedArchiver so the archive records the real
+    // PosterKit class name + full superclass hierarchy, while encode(with:) writes
+    // exactly the CodingKeys we observed from real posterboardd-written files.
+
+    private class _MetaProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterMetadata") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode("", forKey: "displayNameLocalizationKey")
+        }
+    }
+
+    private class _RenderingProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterRenderingConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false, forKey: "depthEffectDisabled")
+            coder.encode(false, forKey: "motionEffectsDisabled")
+        }
+    }
+
+    private class _TimeFontProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterSystemTimeFontConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(true,   forKey: "isSystemItem")
+            coder.encode("",    forKey: "timeFontIdentifier")
+            coder.encode(Float(0), forKey: "weight")
+        }
+    }
+
+    private class _TitleStyleProxy: NSObject, NSCoding {
+        let fontProxy = _TimeFontProxy()
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false,      forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5),forKey: "contentsLuminence")
+            coder.encode("",         forKey: "groupName")
+            coder.encode(false,      forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),  forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),  forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),   forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),   forKey: "preferredTitleLayout")
+            coder.encode(fontProxy,  forKey: "timeFontConfiguration")
+            coder.encode("",         forKey: "timeNumberingSystem")
+            // titleColor omitted (nil — nullable UIColor)
+            coder.encode(Int64(0),   forKey: "titleContentStyle")
+            coder.encode(false,      forKey: "userConfigured")
+            coder.encode(Int64(1),   forKey: "version")
+        }
+    }
+
+    private class _ComplicationProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(NSArray(), forKey: "complications")
+            coder.encode(false,     forKey: "complicationsUseBottomLayout")
+            coder.encode(NSArray(), forKey: "sidebarComplications")
+            // omit nil optionals: complicationIconLayout, inlineComplication, sidebarComplicationIconLayout
+        }
+    }
+
+    private class _QuickActionsProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterQuickActionsConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            // leadingControl and trailingControl omitted (nil) — simplest valid payload
+        }
+    }
+
+    // MARK: - Payload builders
+
+    private static func nska<T: NSCoding>(_ obj: T) -> Data {
+        let a = NSKeyedArchiver(requiringSecureCoding: false)
+        a.encodeRootObject(obj)
+        a.finishEncoding()
+        return a.encodedData
+    }
+
+    static var payloadMetadata:      Data { nska(_MetaProxy()) }
+    static var payloadRendering:     Data { nska(_RenderingProxy()) }
+    static var payloadTitleStyle:    Data { nska(_TitleStyleProxy()) }
+    static var payloadComplication:  Data { nska(_ComplicationProxy()) }
+    static var payloadQuickActions:  Data { nska(_QuickActionsProxy()) }
+
+    // MARK: - inject7: write class-matched payloads into WallpaperKit versions
+
+    @discardableResult
+    static func inject7() -> String {
+        var diag = ["=== Inject v7 (class-matched) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        // Load frameworks so NSClassFromString works in classForKeyedArchiver overrides
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        // Build payloads and report sizes
+        let instancePayloads: [(String, String, Data)] = [
+            ("titleStyle",   "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",   payloadTitleStyle),
+            ("rendering",    "com.apple.posterkit.provider.instance.renderingConfiguration.plist",    payloadRendering),
+            ("complication", "com.apple.posterkit.provider.instance.complicationLayout.plist",         payloadComplication),
+            ("quickActions", "com.apple.posterkit.provider.instance.quickActions.plist",               payloadQuickActions),
+        ]
+        diag.append("payloads built:")
+        for (name, _, data) in instancePayloads {
+            diag.append("  \(name): \(data.count)b")
+            p7DumpNSKAKeys(data: data, indent: "    ", diag: &diag)
+        }
+
+        // Navigate to extBase
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        var totalWritten = 0
+        for extName in allExts where extName.contains("WallpaperKit") {
+            let sdPath = "\(extBase)/\(extName)/configurations"
+            guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+            defer { sdH.release() }
+            let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+            for cfg in configs where !cfg.hasPrefix(".") {
+                let versPath = "\(sdPath)/\(cfg)/versions"
+                guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                defer { versH.release() }
+                let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                for ver in vers where !ver.hasPrefix(".") {
+                    let vPath = "\(versPath)/\(ver)"
+                    guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                    defer { vH.release() }
+                    _ = (try? fm.contentsOfDirectory(atPath: vPath)) ?? []
+
+                    diag.append("\n\(extName.prefix(30))/\(cfg)/v\(ver):")
+                    for (name, fileName, payload) in instancePayloads {
+                        let path = "\(vPath)/\(fileName)"
+                        // Consume the file path to grant write access
+                        if let fH = try? BadQuery.consume(path: path, create: true) { fH.release() }
+                        // Try write
+                        let wrote = fm.createFile(atPath: path, contents: payload, attributes: nil)
+                        if !wrote {
+                            // fallback: atomic write
+                            let wrote2 = (try? payload.write(to: URL(fileURLWithPath: path), options: [])) != nil
+                            diag.append("  \(name): \(wrote2 ? "WRITTEN(fallback) \(payload.count)b" : "FAIL")")
+                            if wrote2 { totalWritten += 1 }
+                        } else {
+                            diag.append("  \(name): WRITTEN \(payload.count)b")
+                            totalWritten += 1
+                        }
+                    }
+                }
+            }
+        }
+        diag.append("\ntotal written: \(totalWritten) files")
+        return pbSave(diag)
+    }
+
     private static func p7DumpNSKAKeys(data: Data, indent: String, diag: inout [String]) {
         guard data.count >= 8,
               String(data: data.prefix(8), encoding: .ascii) == "bplist00",
