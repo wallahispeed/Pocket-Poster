@@ -3763,7 +3763,15 @@ class SymHandler {
             coder.encode(Int64(1),    forKey: "version")
         }
     }
-    static var payloadTitleStyleCustomFont13: Data { nska(_PP13TitleStyleCustomFontProxy()) }
+    static var payloadTitleStyleCustomFont13: Data {
+        NSKeyedArchiver.setClassName("PRPosterCustomTimeFontConfiguration", for: _PP13CustomFontConfigProxy.self)
+        NSKeyedArchiver.setClassName("PRPosterTitleStyleConfiguration",     for: _PP13TitleStyleCustomFontProxy.self)
+        defer {
+            NSKeyedArchiver.setClassName(nil, for: _PP13CustomFontConfigProxy.self)
+            NSKeyedArchiver.setClassName(nil, for: _PP13TitleStyleCustomFontProxy.self)
+        }
+        return nska(_PP13TitleStyleCustomFontProxy())
+    }
 
     @discardableResult
     static func inject13() -> String {
@@ -3818,6 +3826,8 @@ class SymHandler {
             traversalPrefix + "System/Library/Fonts/HelveticaNeue.ttc"
         let payload13sys = payloadTitleStyleCustomFont13
         diag.append("payload13sys (HelveticaNeue system font): \(payload13sys.count)b")
+        // Verify class names are correct in the archive
+        p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
         let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
         guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
@@ -3856,6 +3866,11 @@ class SymHandler {
                             _ = (try? fm.contentsOfDirectory(atPath: base)) ?? []
                             let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
                             let titlePath = "\(base)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
+                            // Dump existing plist before overwrite
+                            if let existing = fm.contents(atPath: titlePath), existing.count > 8 {
+                                diag.append("  existing(\(existing.count)b):")
+                                p7DumpNSKAKeys(data: existing, indent: "    ", diag: &diag)
+                            }
                             if let fH = try? BadQuery.consume(path: titlePath, create: true) { fH.release() }
                             let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
                                 || ((try? payload13sys.write(to: URL(fileURLWithPath: titlePath))) != nil)
