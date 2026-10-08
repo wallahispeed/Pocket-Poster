@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State var probingV7: Bool = false
     @State var injectingV7: Bool = false
     @State var injectingV8: Bool = false
+    @State var injectingV9: Bool = false
     
     var body: some View {
         List {
@@ -127,6 +128,43 @@ struct SettingsView: View {
                     Label("Reset CarPlay Applied Wallpapers", systemImage: "trash.circle")
                 }
                 .foregroundStyle(.red)
+
+                // Inject v9 — gadget probe: NSExpression / PFPosterDescriptor / PFPosterPath as complications
+                //             + NSString probe on timeFontConfiguration key
+                Button(action: {
+                    guard !injectingV9 else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    injectingV9 = true
+                    UIApplication.shared.alert(
+                        title: "Inject v9…",
+                        body: "Testing NSExpression, PFPosterDescriptor, PFPosterPath gadgets + font type probe.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.inject9()
+                        DispatchQueue.main.async {
+                            injectingV9 = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if injectingV9 {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "bolt.shield")
+                        }
+                        Text(injectingV9 ? "Probing gadgets…" : "Inject v9 (gadget probe)")
+                    }
+                }
+                .foregroundStyle(.orange)
+                .disabled(injectingV9)
 
                 // Inject v8 — class-matched all providers + NSDictionary probe on WallpaperKit complication
                 Button(action: {

