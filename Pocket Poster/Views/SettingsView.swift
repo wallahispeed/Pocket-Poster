@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State var probingPosterboardd: Bool = false
     @State var probeOutput: String = ""
     @State var showProbeOutput: Bool = false
+    @State var triggeringDecode: Bool = false
     
     var body: some View {
         List {
@@ -159,6 +160,42 @@ struct SettingsView: View {
                 }
                 .foregroundStyle(.orange)
                 .disabled(probingPosterboardd)
+
+                // Trigger decode — SIGTERM posterboardd, post Darwin notifs, read crash logs
+                Button(action: {
+                    guard !triggeringDecode else { return }
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    triggeringDecode = true
+                    UIApplication.shared.alert(
+                        title: "Triggering decode…",
+                        body: "SIGTERM posterboardd + Darwin notifs. Waiting 4s for crash. Keep screen on.",
+                        animated: true,
+                        withButton: false
+                    )
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let output = SymHandler.triggerDecodeAndCheckCrash()
+                        DispatchQueue.main.async {
+                            triggeringDecode = false
+                            probeOutput = output
+                            UIApplication.shared.dismissAlert(animated: true)
+                            Haptic.shared.notify(.success)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                showProbeOutput = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if triggeringDecode {
+                            ProgressView().scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "bolt.trianglebadge.exclamationmark")
+                        }
+                        Text(triggeringDecode ? "Triggering…" : "Trigger Decode")
+                    }
+                }
+                .foregroundStyle(.red)
+                .disabled(triggeringDecode)
             } header: {
                 Label("Actions", systemImage: "gear")
             }

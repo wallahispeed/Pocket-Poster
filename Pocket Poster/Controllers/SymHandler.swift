@@ -1415,6 +1415,130 @@ class SymHandler {
         sqlite3_finalize(stmt)
     }
 
+    // MARK: - Decode trigger + crash log reader
+
+    /// Kill posterboardd (forces a restart via launchd), post Darwin notifs,
+    /// then wait a moment and check for new crash logs.
+    /// Returns a diagnostic string suitable for display.
+    @discardableResult
+    static func triggerDecodeAndCheckCrash() -> String {
+        var out: [String] = ["=== TriggerDecode \(Date()) ==="]
+        let fm = FileManager.default
+
+        // 1) Find posterboardd PID
+        var pbdPid: pid_t = -1
+        var allPids: [(pid_t, String)] = []
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var procSize = 0
+        sysctl(&mib, u_int(mib.count), nil, &procSize, nil, 0)
+        if procSize > 0 {
+            let count = procSize / MemoryLayout<kinfo_proc>.stride
+            var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
+            sysctl(&mib, u_int(mib.count), &procs, &procSize, nil, 0)
+            for p in procs {
+                let name = withUnsafePointer(to: p.kp_proc.p_comm) {
+                    String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+                }
+                if name.contains("poster") || name.contains("SpringBoard") ||
+                   name.contains("backboard") || name.contains("PosterBoard") {
+                    allPids.append((p.kp_proc.p_pid, name))
+                    if name.hasPrefix("posterboard") || name == "posterboardd" {
+                        pbdPid = p.kp_proc.p_pid
+                    }
+                }
+            }
+        }
+        out.append("processes: \(allPids.map { "\($0.1)(\($0.0))" }.joined(separator: ", "))")
+
+        // 2) Darwin notifications — trigger poster reload
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let notifNames = [
+            "com.apple.springboard.posterboard.wallpapersDidChange",
+            "com.apple.posterboard.newPosterAvailable",
+            "com.apple.posterboardd.posterDataChanged",
+            "com.apple.posterboard.reload",
+            "PRBPosterExtensionDataStoreChanged",
+            "com.apple.PosterBoard.configurationDidChange",
+        ]
+        for n in notifNames {
+            CFNotificationCenterPostNotification(center, CFNotificationName(n as CFString), nil, nil, true)
+        }
+        out.append("posted \(notifNames.count) Darwin notifications")
+
+        // 3) SIGTERM posterboardd if found
+        if pbdPid > 0 {
+            let rc = Darwin.kill(pbdPid, SIGTERM)
+            out.append("SIGTERM pid=\(pbdPid) rc=\(rc) errno=\(errno)")
+        } else {
+            out.append("posterboardd not in process list — skipping SIGTERM")
+        }
+
+        // 4) Snapshot crash logs BEFORE trigger (record existing set)
+        let crashDir = "/var/mobile/Library/Logs/CrashReporter"
+        var preCrashFiles = Set<String>()
+        if let h = try? BadQuery.consume(path: crashDir, create: true) {
+            defer { h.release() }
+            let items = (try? fm.contentsOfDirectory(atPath: crashDir)) ?? []
+            preCrashFiles = Set(items)
+            out.append("crash dir: \(items.count) existing files")
+        } else {
+            out.append("crash dir: NOACCESS (can't read)")
+        }
+
+        // 5) Wait 4s for posterboardd to restart and decode
+        out.append("waiting 4s for decode...")
+        Thread.sleep(forTimeInterval: 4.0)
+
+        // 6) Check for NEW crash logs
+        out.append("\n--- crash log check ---")
+        if let h = try? BadQuery.consume(path: crashDir, create: true) {
+            defer { h.release() }
+            let items = (try? fm.contentsOfDirectory(atPath: crashDir)) ?? []
+            let newFiles = items.filter { !preCrashFiles.contains($0) }
+            out.append("new crash files: \(newFiles.count)")
+            for f in newFiles.sorted() {
+                out.append("  \(f)")
+                // Read first 2000 chars of each new crash log
+                let p = "\(crashDir)/\(f)"
+                if let h2 = try? BadQuery.consume(path: p, create: true),
+                   let data = fm.contents(atPath: p),
+                   let text = String(data: data, encoding: .utf8) {
+                    h2.release()
+                    out.append(String(text.prefix(2000)))
+                } else {
+                    out.append("  (unreadable)")
+                }
+            }
+            if newFiles.isEmpty {
+                out.append("  no new crashes — decode may have been rejected or posterboardd not triggered")
+            }
+        }
+
+        // 7) Check process list AFTER — did posterboardd restart?
+        var postPids: [(pid_t, String)] = []
+        procSize = 0
+        sysctl(&mib, u_int(mib.count), nil, &procSize, nil, 0)
+        if procSize > 0 {
+            let count = procSize / MemoryLayout<kinfo_proc>.stride
+            var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
+            sysctl(&mib, u_int(mib.count), &procs, &procSize, nil, 0)
+            for p in procs {
+                let name = withUnsafePointer(to: p.kp_proc.p_comm) {
+                    String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+                }
+                if name.contains("poster") || name.contains("SpringBoard") || name.contains("backboard") {
+                    postPids.append((p.kp_proc.p_pid, name))
+                }
+            }
+        }
+        out.append("\npost-trigger processes: \(postPids.map { "\($0.1)(\($0.0))" }.joined(separator: ", "))")
+
+        let result = out.joined(separator: "\n")
+        let url = getLCDocumentsDirectory().appendingPathComponent("pp_trigger_diag.txt")
+        try? result.write(to: url, atomically: true, encoding: .utf8)
+        return result
+    }
+
     private static func pbReadBinaryStrings(fm: FileManager, diag: inout [String]) {
         for binPath in ["/usr/libexec/posterboardd", "/usr/sbin/posterboardd",
                         "/usr/libexec/posterboardd.development"] {
