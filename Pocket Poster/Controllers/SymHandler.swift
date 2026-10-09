@@ -3877,7 +3877,12 @@ class SymHandler {
                                 diag.append("  existing(\(existing.count)b):")
                                 p7DumpNSKAKeys(data: existing, indent: "    ", diag: &diag)
                             }
-                            if let fH = try? BadQuery.consume(path: titlePath, create: true) { fH.release() }
+                            // keep fH alive across the write — overwriting an existing file
+                            // needs the file-specific extension active (dir extension alone is
+                            // insufficient for O_WRONLY on an existing inode)
+                            let fH = try? BadQuery.consume(path: titlePath, create: true)
+                            defer { fH?.release() }
+                            diag.append("  fH: \(fH != nil ? "ok" : "nil")")
                             let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
                                 || ((try? payload13sys.write(to: URL(fileURLWithPath: titlePath))) != nil)
                             diag.append("\(extName.prefix(18))/\(subdir.prefix(6))/v\(ver)/\(dirLabel)/titleStyle[sys]: \(ok ? "WRITTEN" : "FAIL")")
