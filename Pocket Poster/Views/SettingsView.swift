@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State var hashCheckTask: Task<Void, any Error>? = nil
     @State var detectingOnDevice: Bool = false
     @State var inject13Running: Bool = false
+    @State var inject13DiagRunning: Bool = false
     
     var body: some View {
         List {
@@ -218,6 +219,40 @@ struct SettingsView: View {
                 Label("inject13 Test", systemImage: "flask")
             } footer: {
                 Text("Switch lock screen to a ClockPoster type (Digital/Analog/Rolling/World/Astronomy) first. After writing, lock the screen — clock font should change to Marker Felt if the traversal fires.")
+            }
+            
+            // MARK: inject13 Diagnostics
+            Section {
+                Button(action: {
+                    guard !pbHash.isEmpty else {
+                        UIApplication.shared.alert(title: "No App Hash", body: "Set the PosterBoard app hash first.")
+                        return
+                    }
+                    inject13DiagRunning = true
+                    Task {
+                        defer { inject13DiagRunning = false }
+                        let report = await Task.detached(priority: .userInitiated) {
+                            Inject13Diagnostics.run(appHash: pbHash)
+                        }.value
+                        let preview = String(report.prefix(1200))
+                        UIApplication.shared.alert(
+                            title: "inject13 Diagnostics",
+                            body: "\(preview)\n\n[Full report saved to Documents/inject13_diag.txt — open in Files app]",
+                            withButton: true
+                        )
+                    }
+                }) {
+                    if inject13DiagRunning {
+                        HStack { ProgressView(); Text("Running diagnostics…") }
+                    } else {
+                        Label("Run inject13 Diagnostics", systemImage: "stethoscope")
+                    }
+                }
+                .disabled(inject13DiagRunning)
+            } header: {
+                Label("inject13 Diagnostics", systemImage: "magnifyingglass")
+            } footer: {
+                Text("Scans the full descriptor store structure, SQLite DB, NSKeyedArchive validity, path traversal math, and bad_query token health. Report saved to Documents/inject13_diag.txt.")
             }
         }
     }
