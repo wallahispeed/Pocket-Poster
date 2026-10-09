@@ -3570,29 +3570,30 @@ class SymHandler {
         return pbSave(diag)
     }
 
-    // MARK: - inject12 proxy classes — PRPosterSystemTimeFontConfiguration path gadget
-
-    // PRPosterSystemTimeFontConfiguration with isSystemItem=false.
-    // timeFontIdentifier = Documents path of a file we create at inject-time.
-    // If posterboardd calls effectiveTimeFontWithExtensionBundle: → non-system path →
-    // looks up font by identifier in the extension bundle OR treats it as a file path.
-    // All three plausible CodingKey spellings for the isSystemItem bool are encoded.
+    // MARK: - inject12 proxy classes — plist-read sanity check via PRPosterSystemTimeFontConfiguration
+    //
+    // Uses a VALID timeFontIdentifier ("PRTimeFontIdentifierNewYork") so that if posterboardd
+    // reads and decodes this plist, the lock screen clock will visually switch to New York serif
+    // digits — unmistakably different from the default SF Pro.
+    // This tests whether the WallpaperKit/ClockPoster titleStyleConfiguration.plist is consulted
+    // at all, WITHOUT requiring extensionBundleURL or triggering any sandbox path.
+    // Valid identifiers confirmed from _PRFontNameForTimeFontIdentifier disasm:
+    //   PRTimeFontIdentifierRounded, PRTimeFontIdentifierNewYork, PRTimeFontIdentifierSlab,
+    //   PRTimeFontIdentifierStencil, PRTimeFontIdentifierSoft, PRTimeFontIdentifierRail, …
     @objc(_PP12SysTimeFontProxy)
     private class _PP12SysTimeFontProxy: NSObject, NSCoding {
-        static var fontPath: String = "/var/mobile/pp_probe_font_12.otf"
+        static var fontPath: String = "PRTimeFontIdentifierNewYork"
         override var classForKeyedArchiver: AnyClass {
             NSClassFromString("PRPosterSystemTimeFontConfiguration") ?? type(of: self)
         }
         override init() { super.init() }
         required init?(coder: NSCoder) { super.init() }
         func encode(with coder: NSCoder) {
-            // Probe path — posterboardd may use this as CTFont URL when isSystemItem=false
             coder.encode(_PP12SysTimeFontProxy.fontPath, forKey: "timeFontIdentifier")
             coder.encode(Double(0.0), forKey: "weight")
-            // Encode all possible key spellings for the isSystemItem bool
-            coder.encode(false, forKey: "systemItem")
-            coder.encode(false, forKey: "_systemItem")
-            coder.encode(false, forKey: "isSystemItem")
+            coder.encode(true, forKey: "systemItem")
+            coder.encode(true, forKey: "_systemItem")
+            coder.encode(true, forKey: "isSystemItem")
         }
     }
 
@@ -3624,7 +3625,7 @@ class SymHandler {
 
     @discardableResult
     static func inject12() -> String {
-        var diag = ["=== Inject v12 (PRPosterSystemTimeFontConfiguration isSystemItem=false) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v12 (PRPosterSystemTimeFontConfiguration NewYork plist-read test) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3643,8 +3644,8 @@ class SymHandler {
                                0x00, 0x10, 0x00, 0x00, 0x00, 0x00]) // searchRange/entrySelector/rangeShift
         otfHeader.append(contentsOf: "pp_rce_probe_12_v1".utf8)
         fm.createFile(atPath: fontProbePath, contents: otfHeader, attributes: nil)
-        _PP12SysTimeFontProxy.fontPath = fontProbePath
-        diag.append("font probe file: \(fontProbePath) (\(otfHeader.count)b)")
+        _PP12SysTimeFontProxy.fontPath = "PRTimeFontIdentifierNewYork"
+        diag.append("timeFontIdentifier: \(_PP12SysTimeFontProxy.fontPath)")
 
         // Encode AFTER setting fontPath
         let payload12 = payloadTitleStyleSysFont
