@@ -118,8 +118,7 @@ enum WallpaperBootstrap {
             if let initMethod = class_getInstanceMethod(cls, kindSel) {
                 typealias InitKindFn = @convention(c) (AnyObject, Selector, NSString) -> AnyObject
                 let imp = method_getImplementation(initMethod)
-                if let instance = cls as? NSObject.Type {
-                    let obj = instance.alloc()
+                if let obj = class_createInstance(cls, 0) {
                     let result = unsafeBitCast(imp, to: InitKindFn.self)(
                         obj, kindSel, kind as NSString)
                     return result
