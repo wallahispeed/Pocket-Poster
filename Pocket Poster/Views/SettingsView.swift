@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State var checkingForHash: Bool = false
     @State var hashCheckTask: Task<Void, any Error>? = nil
     @State var detectingOnDevice: Bool = false
+    @State var inject13Running: Bool = false
     
     var body: some View {
         List {
@@ -171,6 +172,52 @@ struct SettingsView: View {
                 LinkCell(imageName: "POEditor", url: "https://poeditor.com/join/project/MPZOsunwVj", title: NSLocalizedString("Community Translators", comment: ""), contribution: "POEditor")
             } header: {
                 Label("Credits", systemImage: "wrench.and.screwdriver")
+            }
+        
+            // MARK: inject13
+            Section {
+                if SymHandler.prefersBadQuery {
+                    Button(action: {
+                        guard !pbHash.isEmpty else {
+                            UIApplication.shared.alert(title: "No App Hash", body: "Set the PosterBoard app hash first.")
+                            return
+                        }
+                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                        inject13Running = true
+                        Task {
+                            defer { inject13Running = false }
+                            do {
+                                let paths = try Inject13.inject(appHash: pbHash)
+                                Haptic.shared.notify(.success)
+                                UIApplication.shared.alert(
+                                    title: "inject13: payload written",
+                                    body: "Written to \(paths.count) extension director\(paths.count == 1 ? "y" : "ies").\n\nNow lock the screen (ClockPoster type must be active). Check if the clock font changes to Marker Felt."
+                                )
+                            } catch {
+                                Haptic.shared.notify(.error)
+                                UIApplication.shared.alert(title: "inject13 failed", body: error.localizedDescription)
+                            }
+                        }
+                    }) {
+                        if inject13Running {
+                            HStack {
+                                ProgressView()
+                                Text("Writing inject13 payload…")
+                            }
+                        } else {
+                            Label("inject13: Write Font Payload", systemImage: "textformat")
+                        }
+                    }
+                    .disabled(inject13Running)
+                } else {
+                    Text("inject13 requires bad_query (iOS 26+).")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+            } header: {
+                Label("inject13 Test", systemImage: "flask")
+            } footer: {
+                Text("Switch lock screen to a ClockPoster type (Digital/Analog/Rolling/World/Astronomy) first. After writing, lock the screen — clock font should change to Marker Felt if the traversal fires.")
             }
         }
     }
