@@ -3848,23 +3848,25 @@ class SymHandler {
 
             for subdir in ["configurations", "staticdescriptors"] {
                 let sdPath = "\(extBase)/\(extName)/\(subdir)"
-                guard let sdH = try? BadQuery.consume(path: sdPath, create: true) else { continue }
+                // create:false — path was just listed; lstat confirms existence before requesting extension;
+                // BadQuery.swift auto-retries with create:true if lstat fails (path unexpectedly missing)
+                guard let sdH = try? BadQuery.consume(path: sdPath, create: false) else { continue }
                 defer { sdH.release() }
                 let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
                 for cfg in configs where !cfg.hasPrefix(".") {
                     let versPath = "\(sdPath)/\(cfg)/versions"
-                    guard let versH = try? BadQuery.consume(path: versPath, create: true) else { continue }
+                    guard let versH = try? BadQuery.consume(path: versPath, create: false) else { continue }
                     defer { versH.release() }
                     let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
                     for ver in vers where !ver.hasPrefix(".") {
                         let vPath = "\(versPath)/\(ver)"
-                        guard let vH = try? BadQuery.consume(path: vPath, create: true) else { continue }
+                        guard let vH = try? BadQuery.consume(path: vPath, create: false) else { continue }
                         defer { vH.release() }
 
                         for contentSubdir in ["", "contents"] {
                             let base = contentSubdir.isEmpty ? vPath : "\(vPath)/\(contentSubdir)"
                             if !contentSubdir.isEmpty {
-                                guard let cH = try? BadQuery.consume(path: base, create: true) else { continue }
+                                guard let cH = try? BadQuery.consume(path: base, create: false) else { continue }
                                 defer { cH.release() }
                             }
                             _ = (try? fm.contentsOfDirectory(atPath: base)) ?? []
