@@ -16,6 +16,7 @@ import Foundation
 // MARK: - Archive proxy
 
 /// Encodes as PRPosterCustomTimeFontConfiguration via NSKeyedArchiver class-name substitution.
+@objc(Inject13Proxy)
 private final class Inject13Proxy: NSObject, NSCoding {
     var fontPostScriptName: String
     var extensionBundleRelativeFilePath: String
