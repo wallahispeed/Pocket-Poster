@@ -228,55 +228,140 @@ struct Inject13Diagnostics {
 
         // ── 8. Traversal math & target file check ──────────────────────────
         add("\n=== 8. PATH TRAVERSAL VERIFICATION ===")
-        let clockFaceBase = "/System/Applications/MobileTimer.app/PlugIns/ClockFace.appex"
-        add("ClockFace.appex exists: \(fm.fileExists(atPath: clockFaceBase))")
-        if fm.fileExists(atPath: clockFaceBase) {
-            let cfFiles = (try? fm.contentsOfDirectory(atPath: clockFaceBase)) ?? []
-            add("ClockFace.appex contents: \(cfFiles.sorted().joined(separator: ", "))")
-        }
-        // Manually compute URL traversal
-        let baseURL = URL(fileURLWithPath: clockFaceBase).appendingPathComponent("dummy")
-        // URLByAppendingPathComponent strips last component, so base is the dir itself
-        let baseDir = URL(fileURLWithPath: clockFaceBase + "/")
-        let traversed = URL(string: "../../../../Library/Fonts/MarkerFelt.ttc", relativeTo: baseDir)?.standardized
-        add("traversal baseDir: \(clockFaceBase)/")
-        add("traversal path: ../../../../Library/Fonts/MarkerFelt.ttc")
-        add("traversal result: \(traversed?.path ?? "nil")")
-        let targetPath = traversed?.path ?? "/System/Library/Fonts/MarkerFelt.ttc"
-        add("target exists: \(fm.fileExists(atPath: targetPath))")
-        // Check alternate traversal counts
-        for count in [3, 4, 5] {
-            let rel = String(repeating: "../", count: count) + "Library/Fonts/MarkerFelt.ttc"
-            let url = URL(string: rel, relativeTo: baseDir)?.standardized
-            add("  \(count)x../: \(url?.path ?? "nil") exists=\(url.map { fm.fileExists(atPath: $0.path) } ?? false)")
-        }
-        // List available system fonts (so we can pick a different test target)
-        let fontsDir = "/System/Library/Fonts"
-        if let fonts = try? fm.contentsOfDirectory(atPath: fontsDir) {
-            add("System fonts available: \(fonts.sorted().prefix(20).joined(separator: ", "))")
-        }
-        // iOS 26 may use /System/cryptexes/OS/System/Library/Fonts
-        let cryptexFonts = "/System/cryptexes/OS/System/Library/Fonts"
-        add("cryptexes fonts dir exists: \(fm.fileExists(atPath: cryptexFonts))")
-        if fm.fileExists(atPath: cryptexFonts) {
-            let cf2 = (try? fm.contentsOfDirectory(atPath: cryptexFonts)) ?? []
-            add("cryptexes fonts: \(cf2.sorted().prefix(10).joined(separator: ", "))")
+
+        // PosterKit calls URLByAppendingPathComponent:(extensionBundleRelativeFilePath) on extensionBundleURL.
+        // URLByAppendingPathComponent does NOT resolve ".." — the raw path is passed to CGFontCreateFontsWithURL.
+        // The kernel resolves ".." at open() time. This simulates the exact URL construction.
+        func simulateTraversal(base: String, relPath: String) -> String {
+            // Match what URLByAppendingPathComponent: does: append relPath to base (as directory URL)
+            var b = base
+            if !b.hasSuffix("/") { b += "/" }
+            let raw = b + relPath
+            // CGFont passes this to open(); kernel resolves ".." — simulate with standardized
+            let std = URL(fileURLWithPath: raw).standardized.path
+            let exists = fm.fileExists(atPath: std)
+            return "\(raw) → \(std) (exists=\(exists))"
         }
 
-        // ── 9. Clock-related extension names ──────────────────────────────
+        // ClockFace.appex (old hypothesis — keep to verify it's gone)
+        let clockFaceBase = "/System/Applications/MobileTimer.app/PlugIns/ClockFace.appex"
+        add("ClockFace.appex exists: \(fm.fileExists(atPath: clockFaceBase))")
+
+        // ClockPoster.framework (confirmed from binary analysis)
+        let cpFwBase = "/System/Library/PrivateFrameworks/ClockPoster.framework"
+        add("\n--- Traversal from ClockPoster.framework ---")
+        add("base: \(cpFwBase)")
+        let cpTraversals = [
+            ("../Fonts/MarkerFelt.ttc",              "→ PrivateFrameworks/Fonts/ (1 up)"),
+            ("../../Fonts/MarkerFelt.ttc",            "→ Library/Fonts/ (2 up)"),
+            ("../Library/Fonts/MarkerFelt.ttc",       "→ Library/Fonts/ via ../Library/"),
+            ("../../Library/Fonts/MarkerFelt.ttc",    "→ Library/ (2 up) then Library/Fonts/"),
+            ("../../../Library/Fonts/MarkerFelt.ttc", "→ System/Library/Fonts/ (3 up)"),
+            ("../../../../Library/Fonts/MarkerFelt.ttc", "→ System/Library/ (4 up)"),
+        ]
+        for (rel, note) in cpTraversals {
+            add("  [\(note)]")
+            add("  \(simulateTraversal(base: cpFwBase, relPath: rel))")
+        }
+
+        // MobileTimer.app (in case ClockPoster extension is a PlugIn there)
+        let mtBase = "/System/Applications/MobileTimer.app/PlugIns/ClockPosterExtension.appex"
+        add("\n--- Traversal from MobileTimer PlugIn (if it exists) ---")
+        add("base: \(mtBase) exists=\(fm.fileExists(atPath: mtBase))")
+        if fm.fileExists(atPath: mtBase) {
+            for (rel, note) in cpTraversals {
+                add("  [\(note)] \(simulateTraversal(base: mtBase, relPath: rel))")
+            }
+        }
+
+        // List system fonts — pick a real target
+        add("\n--- System font directories ---")
+        let fontDirs = ["/System/Library/Fonts", "/System/cryptexes/OS/System/Library/Fonts"]
+        for fd in fontDirs {
+            let exists = fm.fileExists(atPath: fd)
+            add("\(fd) exists=\(exists)")
+            if exists {
+                let fonts = (try? fm.contentsOfDirectory(atPath: fd)) ?? []
+                add("  fonts[\(fonts.count)]: \(fonts.sorted().prefix(25).joined(separator: ", "))")
+            }
+        }
+
+        // ── 9. Clock Poster extension identification ───────────────────────
         add("\n=== 9. CLOCK POSTER EXTENSION IDENTIFICATION ===")
+
+        // A. NSBundle lookup by bundle identifier — gives the REAL registered path
+        let clockBundleIDs = [
+            "com.apple.ClockPoster.ClockPosterExtension",
+            "com.apple.mobiletimer",
+            "com.apple.mobiletimer-framework.ClockFaceExtension",
+            "com.apple.ClockKit.ClockPosterExtension",
+        ]
+        add("--- A. NSBundle(identifier:) probe ---")
+        for bid in clockBundleIDs {
+            if let burl = Bundle(identifier: bid)?.bundleURL {
+                add("  ✓ \(bid) → \(burl.path)")
+            } else {
+                add("  ✗ \(bid) → NOT FOUND (not loaded in this process)")
+            }
+        }
+
+        // B. Filesystem probe — candidate bundle paths
+        add("--- B. Filesystem bundle path probe ---")
+        let candidatePaths = [
+            "/System/Library/PrivateFrameworks/ClockPoster.framework",
+            "/System/Library/PrivateFrameworks/ClockPoster.framework/PlugIns",
+            "/System/Applications/Clock.app",
+            "/System/Applications/Clock.app/PlugIns",
+            "/System/Applications/MobileTimer.app",
+            "/System/Applications/MobileTimer.app/PlugIns",
+            "/System/Library/ExtensionKit/Extensions",
+        ]
+        for cp in candidatePaths {
+            let exists = fm.fileExists(atPath: cp)
+            add("  \(exists ? "✓" : "✗") \(cp)")
+            if exists {
+                let kids = (try? fm.contentsOfDirectory(atPath: cp)) ?? []
+                if !kids.isEmpty { add("    contents: \(kids.sorted().joined(separator: ", "))") }
+            }
+        }
+
+        // C. Read ClockPoster.framework Info.plist for bundle identifier confirmation
+        add("--- C. ClockPoster.framework Info.plist ---")
+        let cpInfoPath = "/System/Library/PrivateFrameworks/ClockPoster.framework/Info.plist"
+        if fm.fileExists(atPath: cpInfoPath), let d = fm.contents(atPath: cpInfoPath),
+           let pl = try? PropertyListSerialization.propertyList(from: d, options: [], format: nil) as? [String: Any] {
+            add("  CFBundleIdentifier: \(pl["CFBundleIdentifier"] ?? "nil")")
+            add("  CFBundleName: \(pl["CFBundleName"] ?? "nil")")
+            add("  CFBundleVersion: \(pl["CFBundleVersion"] ?? "nil")")
+        } else {
+            add("  NOT FOUND or unreadable: \(cpInfoPath)")
+        }
+
+        // D. Traversal math from ClockPoster.framework
+        add("--- D. Traversal math from ClockPoster.framework ---")
+        let cpBase = "/System/Library/PrivateFrameworks/ClockPoster.framework/"
+        let cpBaseURL = URL(fileURLWithPath: cpBase)
+        for (count, relPath) in [(1, "Fonts/MarkerFelt.ttc"), (2, "../Fonts/MarkerFelt.ttc"), (1, "../Library/Fonts/MarkerFelt.ttc"), (2, "../../Fonts/MarkerFelt.ttc"), (2, "../../Library/Fonts/MarkerFelt.ttc")] {
+            let _ = count
+            let appended = cpBaseURL.appendingPathComponent(relPath)
+            let resolved = URL(fileURLWithPath: cpBase + relPath).standardized
+            add("  \(cpBase)+\(relPath)")
+            add("    appendingPathComponent: \(appended.path)")
+            add("    standardized: \(resolved.path) exists=\(fm.fileExists(atPath: resolved.path))")
+        }
+
+        // E. Keyword scan of extensions dir (original logic)
+        add("--- E. Extensions dir keyword scan ---")
         let clockKeywords = ["clock", "timer", "mobiletimer", "postertime", "clockface", "digital", "analog"]
         let clockExts = extDirs.filter { e in clockKeywords.contains { e.lowercased().contains($0) } }
         if clockExts.isEmpty {
-            add("No clock-related extension found among: \(extDirs.sorted().joined(separator: ", "))")
-            add("PROBLEM: If there's no clock extension entry, posterboardd has never saved a ClockPoster on this device,")
-            add("         OR the ClockPoster uses a different descriptor path (not under Extensions/).")
+            add("  No clock-related extension in Extensions/ dir: \(extDirs.sorted().joined(separator: ", "))")
+            add("  PROBLEM: posterboardd may not have stored clock descriptors yet, OR uses a different path")
         } else {
-            add("Clock-related extensions: \(clockExts.joined(separator: ", "))")
+            add("  Clock extensions found: \(clockExts.joined(separator: ", "))")
         }
-        // Also look for anything with "WallpaperKit" as that's what collectionsposter uses
         let wpkitExts = extDirs.filter { $0.contains("WallpaperKit") }
-        add("WallpaperKit extensions: \(wpkitExts.isEmpty ? "(none)" : wpkitExts.joined(separator: ", "))")
+        add("  WallpaperKit extensions: \(wpkitExts.isEmpty ? "(none)" : wpkitExts.joined(separator: ", "))")
 
         // ── 10. bad_query token test ───────────────────────────────────────
         add("\n=== 10. BAD_QUERY TOKEN TEST ===")
