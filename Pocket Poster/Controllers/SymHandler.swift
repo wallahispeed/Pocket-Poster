@@ -3785,8 +3785,17 @@ class SymHandler {
         }
 
         let uuid: String
-        do { uuid = try BadQuery.findPosterBoardHash() } catch {
-            diag.append("PB hash: \(error)"); return pbSave(diag)
+        let uuidKey = "pp_pb_uuid_cache"
+        do {
+            uuid = try BadQuery.findAppHash(bundleId: BadQuery.posterBoardBundleId, maxInode: 8_000_000)
+            UserDefaults.standard.set(uuid, forKey: uuidKey)
+        } catch {
+            if let cached = UserDefaults.standard.string(forKey: uuidKey) {
+                uuid = cached
+                diag.append("PB hash detection failed (\(error)) — using cached uuid")
+            } else {
+                diag.append("PB hash: \(error)"); return pbSave(diag)
+            }
         }
         let container = BadQuery.applicationContainerPath(appHash: uuid)
         diag.append("PB container uuid: \(uuid)")
