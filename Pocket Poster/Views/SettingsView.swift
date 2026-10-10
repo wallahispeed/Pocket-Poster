@@ -37,7 +37,7 @@ struct SettingsView: View {
             Section {
                 HStack(spacing: 6) {
                     Image(systemName: "tag.fill").foregroundStyle(.orange)
-                    Text("inject13-r5").font(.system(.body, design: .monospaced)).bold().foregroundStyle(.orange)
+                    Text("inject13-r6").font(.system(.body, design: .monospaced)).bold().foregroundStyle(.orange)
                 }
             } header: {
                 Label("Build", systemImage: "info.circle")

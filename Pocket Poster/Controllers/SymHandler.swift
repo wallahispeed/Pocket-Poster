@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13-r5 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r6 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3786,15 +3786,23 @@ class SymHandler {
 
         let uuid: String
         let uuidKey = "pp_pb_uuid_cache"
-        do {
-            uuid = try BadQuery.findAppHash(bundleId: BadQuery.posterBoardBundleId, maxInode: 8_000_000)
-            UserDefaults.standard.set(uuid, forKey: uuidKey)
-        } catch {
-            if let cached = UserDefaults.standard.string(forKey: uuidKey) {
-                uuid = cached
-                diag.append("PB hash detection failed (\(error)) -- using cached uuid")
-            } else {
-                diag.append("PB hash: \(error)"); return pbSave(diag)
+        // Check manually-entered hash from Settings first — AppStorage("pbHash") stores here
+        if let manual = UserDefaults.standard.string(forKey: "pbHash"),
+           !manual.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            uuid = manual.trimmingCharacters(in: .whitespacesAndNewlines)
+            diag.append("PB hash: using manually-entered hash from Settings")
+        } else {
+            do {
+                uuid = try BadQuery.findAppHash(bundleId: BadQuery.posterBoardBundleId)
+                UserDefaults.standard.set(uuid, forKey: uuidKey)
+            } catch {
+                if let cached = UserDefaults.standard.string(forKey: uuidKey),
+                   !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    uuid = cached
+                    diag.append("PB hash detection failed (\(error)) -- using cached uuid")
+                } else {
+                    diag.append("PB hash: \(error)"); return pbSave(diag)
+                }
             }
         }
         let container = BadQuery.applicationContainerPath(appHash: uuid)
