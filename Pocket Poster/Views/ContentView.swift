@@ -158,6 +158,13 @@ struct ContentView: View {
                             }
                             .buttonStyle(TintedButton(color: .orange, fullwidth: true))
                             Button(action: {
+                                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                                RespringHelper.respring()
+                            }) {
+                                Label("Respring", systemImage: "arrow.counterclockwise.circle")
+                            }
+                            .buttonStyle(TintedButton(color: .gray, fullwidth: true))
+                            Button(action: {
                                 UIApplication.shared.confirmAlert(
                                     title: NSLocalizedString("Reset Collections", comment: ""),
                                     body: SymHandler.prefersBadQuery
