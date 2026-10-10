@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r3 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",

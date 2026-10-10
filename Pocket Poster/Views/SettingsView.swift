@@ -35,6 +35,15 @@ struct SettingsView: View {
     var body: some View {
         List {
             Section {
+                HStack(spacing: 6) {
+                    Image(systemName: "tag.fill").foregroundStyle(.orange)
+                    Text("inject13-r3").font(.system(.body, design: .monospaced)).bold().foregroundStyle(.orange)
+                }
+            } header: {
+                Label("Build", systemImage: "info.circle")
+            }
+
+            Section {
                 VStack(alignment: .leading, spacing: 10) {
                     TextField("Enter PosterBoard App Hash", text: $pbHash)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
