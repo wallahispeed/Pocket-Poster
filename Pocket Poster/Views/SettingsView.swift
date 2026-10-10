@@ -26,7 +26,7 @@ struct SettingsView: View {
             Section {
                 HStack(spacing: 6) {
                     Image(systemName: "tag.fill").foregroundStyle(.orange)
-                    Text("inject13-r9")
+                    Text("inject13-r10")
                         .font(.system(.body, design: .monospaced))
                         .bold()
                         .foregroundStyle(.orange)

@@ -3902,14 +3902,53 @@ class SymHandler {
         let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
         diag.append("extBase contents (\(allExts.count)): \(allExts.prefix(5).joined(separator: ", "))")
 
-        // Only ClockPoster can trigger effectiveTimeFontWithExtensionBundleURL:
-        guard let clockExtName = allExts.first(where: { $0.contains("ClockPoster") }) else {
-            diag.append("No ClockPoster extension in Extensions/"); return pbSave(diag)
+        // Diagnose whether this is actually posterboardd's container
+        let appSupportPath = container + "/Library/Application Support"
+        let appSupportItems = (try? fm.contentsOfDirectory(atPath: appSupportPath)) ?? []
+        diag.append("AppSupport (\(appSupportItems.count)): \(appSupportItems.prefix(6).joined(separator: ", "))")
+
+        // Find ClockPoster: try the configured container first, then scan all container
+        // types. On iOS 26.5 posterboardd may use InternalDaemon, not Application.
+        var clockExtBase = extBase
+        var discoveredClockExt: String? = allExts.first(where: { $0.contains("ClockPoster") })
+
+        if discoveredClockExt == nil {
+            diag.append("ClockPoster absent — scanning InternalDaemon/PluginKitPlugin/Application")
+            let scanRoots = [
+                "/var/mobile/Containers/Data/InternalDaemon",
+                "/var/mobile/Containers/Data/PluginKitPlugin",
+                "/var/mobile/Containers/Data/Application"
+            ]
+            outer: for root in scanRoots {
+                let uuids = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+                for u in uuids where u.count == 36 && u.contains("-") {
+                    let dsBase = "\(root)/\(u)/Library/Application Support/PRBPosterExtensionDataStore"
+                    guard fm.fileExists(atPath: dsBase) else { continue }
+                    // Iterate every version sub-dir (don't assume 61 is universal)
+                    let dsVers = (try? fm.contentsOfDirectory(atPath: dsBase)) ?? []
+                    for ver in dsVers {
+                        let candidate = "\(dsBase)/\(ver)/Extensions"
+                        let exts = (try? fm.contentsOfDirectory(atPath: candidate)) ?? []
+                        if let name = exts.first(where: { $0.contains("ClockPoster") }) {
+                            let rootLabel = root.components(separatedBy: "/").last ?? root
+                            diag.append("Found: \(rootLabel)/\(u.prefix(8)) ver=\(ver) ext=\(name.prefix(24))")
+                            clockExtBase = candidate
+                            discoveredClockExt = name
+                            break outer
+                        }
+                    }
+                }
+            }
+        }
+
+        guard let clockExtName = discoveredClockExt else {
+            diag.append("ClockPoster not found — open Lock Screen > Customize once, then retry")
+            return pbSave(diag)
         }
         diag.append("clockExt: \(clockExtName)")
 
         // iOS 26 uses "descriptors/" -- prior iOS used "configurations"/"staticdescriptors"
-        let descriptorsPath = "\(extBase)/\(clockExtName)/descriptors"
+        let descriptorsPath = "\(clockExtBase)/\(clockExtName)/descriptors"
         let descH: BadQueryHandle? = noSandbox ? nil : (try? BadQuery.consume(path: descriptorsPath, create: false))
         defer { descH?.release() }
         guard noSandbox || descH != nil else {
