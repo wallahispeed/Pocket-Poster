@@ -50,6 +50,16 @@ done
 mkdir Payload
 cp -r "${APPLICATION_NAME}.app" "Payload/${APPLICATION_NAME}.app"
 strip "Payload/${APPLICATION_NAME}.app/${APPLICATION_NAME}"
+
+# Inject private entitlements so TrollStore signs with no-sandbox + platform-application.
+# Without this bad_query's sandbox_extension_consume is kernel-refused for all paths.
+ENT="$WORKING_LOCATION/entitlements.plist"
+if command -v ldid &>/dev/null && [ -f "$ENT" ]; then
+    ldid -S"$ENT" "Payload/${APPLICATION_NAME}.app/${APPLICATION_NAME}"
+    echo "ldid: entitlements injected from $ENT"
+else
+    echo "WARNING: ldid not found or entitlements.plist missing — binary has no entitlements"
+fi
 # quiet zip for CI logs; name with underscore for download URLs
 zip -qr "Pocket_Poster.ipa" Payload
 # keep legacy name too

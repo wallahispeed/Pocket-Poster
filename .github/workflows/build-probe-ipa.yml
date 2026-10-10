@@ -34,6 +34,13 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep iphoneos || true
 
+      - name: Install ldid
+        run: |
+          if ! command -v ldid &>/dev/null; then
+            brew install ldid
+          fi
+          ldid 2>&1 | head -1 || true
+
       - name: Inject PhysicsWallpaperExtension
         run: python3 inject_physics_widget.py
 
