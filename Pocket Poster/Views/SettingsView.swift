@@ -37,7 +37,7 @@ struct SettingsView: View {
             Section {
                 HStack(spacing: 6) {
                     Image(systemName: "tag.fill").foregroundStyle(.orange)
-                    Text("inject13-r4").font(.system(.body, design: .monospaced)).bold().foregroundStyle(.orange)
+                    Text("inject13-r5").font(.system(.body, design: .monospaced)).bold().foregroundStyle(.orange)
                 }
             } header: {
                 Label("Build", systemImage: "info.circle")
@@ -689,7 +689,7 @@ struct SettingsView: View {
         detectingOnDevice = true
         UIApplication.shared.alert(
             title: "Scanning containers…",
-            body: "Looking for PosterBoard via bad_query. This may take a moment.",
+            body: "Scanning inodes via bad_query (extended range up to 80M). May take 30–60s.",
             animated: true,
             withButton: false
         )
