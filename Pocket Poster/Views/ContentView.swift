@@ -137,6 +137,27 @@ struct ContentView: View {
                             }
                             .buttonStyle(TintedButton(color: .purple, fullwidth: true))
                             Button(action: {
+                                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                                UIApplication.shared.alert(title: "inject13", body: "Injecting…", animated: false, withButton: false)
+                                DispatchQueue.global(qos: .userInitiated).async {
+                                    do {
+                                        let uuid = try inject13()
+                                        DispatchQueue.main.async {
+                                            Haptic.shared.notify(.success)
+                                            UIApplication.shared.alert(title: "inject13", body: "Wrote descriptor \(uuid).\nLock/unlock to trigger posterboardd.")
+                                        }
+                                    } catch {
+                                        DispatchQueue.main.async {
+                                            Haptic.shared.notify(.error)
+                                            UIApplication.shared.alert(title: "inject13 failed", body: error.localizedDescription)
+                                        }
+                                    }
+                                }
+                            }) {
+                                Label("inject13 (font parser)", systemImage: "ladybug")
+                            }
+                            .buttonStyle(TintedButton(color: .orange, fullwidth: true))
+                            Button(action: {
                                 UIApplication.shared.confirmAlert(
                                     title: NSLocalizedString("Reset Collections", comment: ""),
                                     body: SymHandler.prefersBadQuery
