@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13-r9 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r11 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3913,18 +3913,20 @@ class SymHandler {
         var discoveredClockExt: String? = allExts.first(where: { $0.contains("ClockPoster") })
 
         if discoveredClockExt == nil {
-            diag.append("ClockPoster absent — scanning InternalDaemon/PluginKitPlugin/Application")
+            diag.append("ClockPoster absent — scanning containers + fixed paths")
+            // Include AppGroup: posterboardd may share data via a group container on iOS 26
             let scanRoots = [
                 "/var/mobile/Containers/Data/InternalDaemon",
                 "/var/mobile/Containers/Data/PluginKitPlugin",
-                "/var/mobile/Containers/Data/Application"
+                "/var/mobile/Containers/Data/Application",
+                "/var/mobile/Containers/Shared/AppGroup"
             ]
             outer: for root in scanRoots {
                 let uuids = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+                diag.append("  \(root.components(separatedBy: "/").last ?? root): \(uuids.filter { $0.count == 36 }.count) UUIDs")
                 for u in uuids where u.count == 36 && u.contains("-") {
                     let dsBase = "\(root)/\(u)/Library/Application Support/PRBPosterExtensionDataStore"
                     guard fm.fileExists(atPath: dsBase) else { continue }
-                    // Iterate every version sub-dir (don't assume 61 is universal)
                     let dsVers = (try? fm.contentsOfDirectory(atPath: dsBase)) ?? []
                     for ver in dsVers {
                         let candidate = "\(dsBase)/\(ver)/Extensions"
@@ -3935,6 +3937,36 @@ class SymHandler {
                             clockExtBase = candidate
                             discoveredClockExt = name
                             break outer
+                        }
+                    }
+                }
+            }
+
+            // iOS 26 may store posterboardd data at a fixed Library path, not in a container.
+            // List Library/ items containing "Poster"/"Board" for diagnostics, then probe each.
+            if discoveredClockExt == nil {
+                let libItems = (try? fm.contentsOfDirectory(atPath: "/var/mobile/Library")) ?? []
+                let posterKeys = libItems.filter { $0.contains("Poster") || $0.contains("poster") || $0.contains("Board") }
+                diag.append("  Library/ Poster|Board items: \(posterKeys.isEmpty ? "none" : posterKeys.joined(separator: ", "))")
+                // Build a deduplicated candidate list: discovered + hardcoded known paths
+                var fixedCandidates = ["/var/mobile/Library/PosterBoard",
+                                       "/var/mobile/Library/SpringBoard"]
+                for item in posterKeys {
+                    let p = "/var/mobile/Library/\(item)"
+                    if !fixedCandidates.contains(p) { fixedCandidates.append(p) }
+                }
+                for lib in fixedCandidates where discoveredClockExt == nil {
+                    let dsBase = "\(lib)/PRBPosterExtensionDataStore"
+                    guard fm.fileExists(atPath: dsBase) else { continue }
+                    diag.append("  PRBPosterExtensionDataStore at Library/\(lib.components(separatedBy: "/").last ?? lib)")
+                    let dsVers = (try? fm.contentsOfDirectory(atPath: dsBase)) ?? []
+                    for ver in dsVers where discoveredClockExt == nil {
+                        let candidate = "\(dsBase)/\(ver)/Extensions"
+                        let exts = (try? fm.contentsOfDirectory(atPath: candidate)) ?? []
+                        if let name = exts.first(where: { $0.contains("ClockPoster") }) {
+                            diag.append("Found: Library/\(lib.components(separatedBy: "/").last ?? lib) ver=\(ver) ext=\(name.prefix(24))")
+                            clockExtBase = candidate
+                            discoveredClockExt = name
                         }
                     }
                 }
