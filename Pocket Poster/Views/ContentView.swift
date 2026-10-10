@@ -141,10 +141,10 @@ struct ContentView: View {
                                 UIApplication.shared.alert(title: "inject13", body: "Injecting…", animated: false, withButton: false)
                                 DispatchQueue.global(qos: .userInitiated).async {
                                     do {
-                                        let uuid = try inject13()
+                                        let paths = try inject13()
                                         DispatchQueue.main.async {
                                             Haptic.shared.notify(.success)
-                                            UIApplication.shared.alert(title: "inject13", body: "Wrote descriptor \(uuid).\nLock/unlock to trigger posterboardd.")
+                                            UIApplication.shared.alert(title: "inject13", body: "Wrote \(paths.count) file(s).\nLock/unlock to trigger posterboardd.")
                                         }
                                     } catch {
                                         DispatchQueue.main.async {
