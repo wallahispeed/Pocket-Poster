@@ -38,6 +38,9 @@ jobs:
       - name: Inject PhysicsWallpaperExtension
         run: python3 inject_physics_widget.py
 
+      - name: Link IOKit (for KernelXploit)
+        run: python3 inject_kernel_exploit.py
+
       - name: Resolve packages
         run: |
           xcodebuild -project "Pocket Poster.xcodeproj" \
