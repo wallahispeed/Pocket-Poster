@@ -25,6 +25,7 @@ struct ContentView: View {
     
     @State var showTendiesImporter: Bool = false
     @State var hideResetHelp: Bool = true
+    @State var showKernelView: Bool = false
     
     var body: some View {
         NavigationStack {
@@ -157,7 +158,7 @@ struct ContentView: View {
                                 Label("inject13 (font parser)", systemImage: "ladybug")
                             }
                             .buttonStyle(TintedButton(color: .orange, fullwidth: true))
-                            NavigationLink(destination: KernelExploitView()) {
+                            Button(action: { showKernelView = true }) {
                                 Label("Kernel Safe Probe", systemImage: "cpu")
                             }
                             .buttonStyle(TintedButton(color: .mint, fullwidth: true))
@@ -216,6 +217,7 @@ struct ContentView: View {
                     Label("Actions", systemImage: "hammer")
                 }
             }
+            .navigationDestination(isPresented: $showKernelView) { KernelExploitView() }
             .navigationTitle("Pocket Poster")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
