@@ -157,6 +157,10 @@ struct ContentView: View {
                                 Label("inject13 (font parser)", systemImage: "ladybug")
                             }
                             .buttonStyle(TintedButton(color: .orange, fullwidth: true))
+                            NavigationLink(destination: KernelExploitView()) {
+                                Label("Kernel Safe Probe", systemImage: "cpu")
+                            }
+                            .buttonStyle(TintedButton(color: .mint, fullwidth: true))
                             Button(action: {
                                 UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                                 RespringHelper.respring()
