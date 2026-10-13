@@ -381,7 +381,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.2.34;
+				MARKETING_VERSION = 3.2.35;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -418,7 +418,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.2.34;
+				MARKETING_VERSION = 3.2.35;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
