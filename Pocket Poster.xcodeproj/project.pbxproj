@@ -12,6 +12,7 @@
 		6FB105552E26D3EC00185A5C /* CachedAsyncImage in Frameworks */ = {isa = PBXBuildFile; productRef = 6FB105542E26D3EC00185A5C /* CachedAsyncImage */; };
 
 		PP00000000000000000000AB /* PhysicsWallpaperExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = PP00000000000000000000A1 /* PhysicsWallpaperExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		XC00000000000000000001AC /* Probe65371.xpc in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = XC00000000000000000001A1 /* Probe65371.xpc */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -22,12 +23,20 @@
 			remoteGlobalIDString = PP00000000000000000000A2;
 			remoteInfo = PhysicsWallpaperExtension;
 		};
+		XC00000000000000000001AA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6F09B7952DEB694B00CDE89C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = XC00000000000000000001A2;
+			remoteInfo = Probe65371;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		6F09B79D2DEB694B00CDE89C /* Pocket Poster.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Pocket Poster.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 
 		PP00000000000000000000A1 /* PhysicsWallpaperExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PhysicsWallpaperExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		XC00000000000000000001A1 /* Probe65371.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = Probe65371.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -37,6 +46,7 @@
 			membershipExceptions = (
 				Exploit/bad_query.h,
 				"Exploit/Pocket-Poster-Bridging-Header.h",
+				"Exploit/ProbeXPC.h",
 				"Exploit/xpc_crash.h",
 			);
 		};
@@ -60,6 +70,12 @@
 			path = PhysicsWallpaperExtension;
 			sourceTree = "<group>";
 		};
+
+		XC00000000000000000001A3 /* Probe65371 */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Probe65371;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -70,6 +86,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				PP00000000000000000000AB /* PhysicsWallpaperExtension.appex in Embed Foundation Extensions */,
+				XC00000000000000000001AC /* Probe65371.xpc in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -91,6 +108,9 @@
 		PP00000000000000000000A4 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		PP00000000000000000000A5 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		PP00000000000000000000A6 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		XC00000000000000000001A4 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		XC00000000000000000001A5 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		XC00000000000000000001A6 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 
 /* Begin PBXGroup section */
 		6F09B7942DEB694B00CDE89C = {
@@ -106,6 +126,7 @@
 			children = (
 				6F09B79D2DEB694B00CDE89C /* Pocket Poster.app */,
 				PP00000000000000000000A1 /* PhysicsWallpaperExtension.appex */,
+				XC00000000000000000001A1 /* Probe65371.xpc */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -126,6 +147,7 @@
 			);
 			dependencies = (
 				PP00000000000000000000AC /* PhysicsWallpaperExtension */,
+				XC00000000000000000001AB /* Probe65371 */,
 			);
 			fileSystemSynchronizedGroups = (
 				6F09B79F2DEB694B00CDE89C /* Pocket Poster */,
@@ -161,6 +183,27 @@
 			productReference = PP00000000000000000000A1 /* PhysicsWallpaperExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+
+		XC00000000000000000001A2 /* Probe65371 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = XC00000000000000000001A7 /* Build configuration list for PBXNativeTarget "Probe65371" */;
+			buildPhases = (
+				XC00000000000000000001A4 /* Sources */,
+				XC00000000000000000001A5 /* Frameworks */,
+				XC00000000000000000001A6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				XC00000000000000000001A3 /* Probe65371 */,
+			);
+			name = Probe65371;
+			productName = Probe65371;
+			productReference = XC00000000000000000001A1 /* Probe65371.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -175,6 +218,9 @@
 						CreatedOnToolsVersion = 16.2;
 					};
 					PP00000000000000000000A2 = {
+						CreatedOnToolsVersion = 16.2;
+					};
+					XC00000000000000000001A2 = {
 						CreatedOnToolsVersion = 16.2;
 					};
 				};
@@ -200,6 +246,7 @@
 			targets = (
 				6F09B79C2DEB694B00CDE89C /* Pocket Poster */,
 				PP00000000000000000000A2 /* PhysicsWallpaperExtension */,
+				XC00000000000000000001A2 /* Probe65371 */,
 			);
 		};
 /* End PBXProject section */
@@ -229,6 +276,11 @@
 			isa = PBXTargetDependency;
 			target = PP00000000000000000000A2 /* PhysicsWallpaperExtension */;
 			targetProxy = PP00000000000000000000AD /* PBXContainerItemProxy */;
+		};
+		XC00000000000000000001AB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = XC00000000000000000001A2 /* Probe65371 */;
+			targetProxy = XC00000000000000000001AA /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -360,7 +412,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 57;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_ASSET_PATHS = "\"Pocket Poster/Preview Content\"";
 				DEVELOPMENT_TEAM = 2P4CP47H76;
 				ENABLE_PREVIEWS = YES;
@@ -381,7 +433,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.2.57;
+				MARKETING_VERSION = 3.2.58;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -397,7 +449,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 57;
+				CURRENT_PROJECT_VERSION = 58;
 				DEVELOPMENT_ASSET_PATHS = "\"Pocket Poster/Preview Content\"";
 				DEVELOPMENT_TEAM = 2P4CP47H76;
 				ENABLE_PREVIEWS = YES;
@@ -418,7 +470,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 3.2.57;
+				MARKETING_VERSION = 3.2.58;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -429,6 +481,42 @@
 			name = Release;
 		};
 
+		XC00000000000000000001A8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				INFOPLIST_FILE = "Probe65371-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
+				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster.Probe65371";
+				PRODUCT_MODULE_NAME = Probe65371;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		XC00000000000000000001A9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				INFOPLIST_FILE = "Probe65371-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks");
+				PRODUCT_BUNDLE_IDENTIFIER = "com.mak5er.Pocket-Poster.Probe65371";
+				PRODUCT_MODULE_NAME = Probe65371;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		PP00000000000000000000A7 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -489,6 +577,15 @@
 			defaultConfigurationName = Release;
 		};
 
+		XC00000000000000000001A7 /* Build configuration list for PBXNativeTarget "Probe65371" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				XC00000000000000000001A8 /* Debug */,
+				XC00000000000000000001A9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		PP00000000000000000000A9 /* Build configuration list for PBXNativeTarget "PhysicsWallpaperExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
