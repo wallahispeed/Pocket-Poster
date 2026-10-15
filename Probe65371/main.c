@@ -27,16 +27,25 @@
 #include <pthread.h>
 
 /*
- * xpc_main() and xpc_connection_create_mach_service() are present in iOS's
- * libxpc at runtime but are marked API_UNAVAILABLE(ios) in the public SDK
- * headers to discourage third-party use.  We retrieve them at runtime via
- * dlsym to avoid the compile-time availability error.
+ * Several XPC APIs used by embedded XPC service binaries are absent from the
+ * iOS SDK public headers but are present in libxpc.dylib at runtime:
+ *   xpc_main()                        — service entry point
+ *   xpc_connection_create_mach_service() — listener creation
+ *   xpc_dictionary_set_mach_send()    — embed a Mach send right in an XPC dict
+ *
+ * For xpc_main / xpc_connection_create_mach_service: they are declared
+ * API_UNAVAILABLE(ios), which is a compile-time error we bypass via dlsym.
+ * For xpc_dictionary_set_mach_send: it is simply absent from the iOS headers,
+ * so we forward-declare it here; the linker resolves it against libxpc.dylib.
  */
 typedef void (*xpc_main_fn_t)(xpc_connection_handler_t handler);
 typedef xpc_connection_t (*xpc_create_svc_fn_t)(const char *name,
                                                  dispatch_queue_t targetq,
                                                  uint64_t flags);
 #define XPC_MACH_SERVICE_LISTENER 1ULL  /* XPC_CONNECTION_MACH_SERVICE_LISTENER */
+
+extern void xpc_dictionary_set_mach_send(xpc_object_t xdict, const char *key, mach_port_t port);
+extern mach_port_t xpc_dictionary_get_mach_send(xpc_object_t xdict, const char *key);
 
 #define MAX_DESCS        8
 #define RECV_BUF_SIZE    4096
