@@ -16,10 +16,10 @@
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
-    <key>XPCService</key>
+    <key>NSExtension</key>
     <dict>
-        <key>ServiceType</key>
-        <string>Application</string>
+        <key>NSExtensionPointIdentifier</key>
+        <string>com.apple.services</string>
     </dict>
 </dict>
 </plist>
