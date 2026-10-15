@@ -20,10 +20,23 @@
 #include <xpc/xpc.h>
 #include <mach/mach.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+
+/*
+ * xpc_main() and xpc_connection_create_mach_service() are present in iOS's
+ * libxpc at runtime but are marked API_UNAVAILABLE(ios) in the public SDK
+ * headers to discourage third-party use.  We retrieve them at runtime via
+ * dlsym to avoid the compile-time availability error.
+ */
+typedef void (*xpc_main_fn_t)(xpc_connection_handler_t handler);
+typedef xpc_connection_t (*xpc_create_svc_fn_t)(const char *name,
+                                                 dispatch_queue_t targetq,
+                                                 uint64_t flags);
+#define XPC_MACH_SERVICE_LISTENER 1ULL  /* XPC_CONNECTION_MACH_SERVICE_LISTENER */
 
 #define MAX_DESCS        8
 #define RECV_BUF_SIZE    4096
@@ -188,20 +201,36 @@ static void handle_connection(xpc_connection_t peer) {
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
+
+    /* Try xpc_main() first — it is the canonical XPC service entry point. */
+    xpc_main_fn_t xpc_main_ptr =
+        (xpc_main_fn_t)(uintptr_t)dlsym(RTLD_DEFAULT, "xpc_main");
+
+    if (xpc_main_ptr) {
+        xpc_main_ptr(handle_connection);
+        __builtin_unreachable();
+    }
+
     /*
-     * xpc_main() is macOS-only. On iOS, create the mach-service listener
-     * explicitly and hand off to dispatch_main().
+     * Fallback: xpc_main not found (should not happen on modern iOS).
+     * Create the mach-service listener manually and spin dispatch_main().
      */
-    xpc_connection_t listener = xpc_connection_create_mach_service(
-        "com.mak5er.Pocket-Poster.Probe65371",
-        dispatch_get_main_queue(),
-        XPC_CONNECTION_MACH_SERVICE_LISTENER
-    );
-    xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {
-        if (xpc_get_type(event) == XPC_TYPE_CONNECTION)
-            handle_connection((xpc_connection_t)event);
-    });
-    xpc_connection_resume(listener);
+    xpc_create_svc_fn_t make_svc =
+        (xpc_create_svc_fn_t)(uintptr_t)dlsym(RTLD_DEFAULT,
+                                               "xpc_connection_create_mach_service");
+    if (make_svc) {
+        xpc_connection_t listener = make_svc(
+            "com.mak5er.Pocket-Poster.Probe65371",
+            dispatch_get_main_queue(),
+            XPC_MACH_SERVICE_LISTENER
+        );
+        xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {
+            if (xpc_get_type(event) == XPC_TYPE_CONNECTION)
+                handle_connection((xpc_connection_t)event);
+        });
+        xpc_connection_resume(listener);
+    }
+
     dispatch_main();
     return 0;
 }
