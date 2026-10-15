@@ -196,7 +196,10 @@ shouldAcceptNewConnection:(NSXPCConnection *)conn
 int main(void)
 {
     @autoreleasepool {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
         NSXPCListener *listener = [NSXPCListener serviceListener];
+#pragma clang diagnostic pop
         listener.delegate = [ServiceDelegate new];
         [listener resume];
         [[NSRunLoop mainRunLoop] run];
