@@ -19,6 +19,7 @@
 
 #include <xpc/xpc.h>
 #include <mach/mach.h>
+#include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -187,6 +188,20 @@ static void handle_connection(xpc_connection_t peer) {
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
-    xpc_main(handle_connection);
+    /*
+     * xpc_main() is macOS-only. On iOS, create the mach-service listener
+     * explicitly and hand off to dispatch_main().
+     */
+    xpc_connection_t listener = xpc_connection_create_mach_service(
+        "com.mak5er.Pocket-Poster.Probe65371",
+        dispatch_get_main_queue(),
+        XPC_CONNECTION_MACH_SERVICE_LISTENER
+    );
+    xpc_connection_set_event_handler(listener, ^(xpc_object_t event) {
+        if (xpc_get_type(event) == XPC_TYPE_CONNECTION)
+            handle_connection((xpc_connection_t)event);
+    });
+    xpc_connection_resume(listener);
+    dispatch_main();
     return 0;
 }
