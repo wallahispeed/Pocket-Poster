@@ -16,12 +16,12 @@
     <string>1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
-    <key>NSPrincipalClass</key>
-    <string>ProbeExtensionController</string>
     <key>NSExtension</key>
     <dict>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.services</string>
+        <key>NSExtensionPrincipalClass</key>
+        <string>ProbeExtensionController</string>
         <key>NSExtensionContextClass</key>
         <string>ProbeVendorContext</string>
         <key>NSExtensionAttributes</key>
