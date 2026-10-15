@@ -1,17 +1,25 @@
 /*
- * ProbeExtensionController.m — Probe65371 extension principal class.
+ * ProbeExtensionController.m — Probe65371 extension (v3.2.65).
  *
- * The extension is launched by the host app via the private NSExtension API
- * (NSExtension +extensionWithIdentifier:error: / -beginExtensionRequestWithInputItems:completion:).
- * The framework sets up a bidirectional NSXPCConnection ("auxiliary connection")
- * between host and extension, configured via the _extensionAuxiliaryVendorProtocol /
- * _extensionAuxiliaryHostProtocol class methods on NSExtensionContext.
+ * Architecture (corrected per v3.2.65 analysis):
  *
- * Protocol:
+ *   Info.plist sets NSExtensionContextClass = ProbeVendorContext.
+ *   The framework creates a ProbeVendorContext as this request's context,
+ *   calls +_extensionAuxiliaryVendorProtocol / +_extensionAuxiliaryHostProtocol
+ *   on it to configure both sides of the auxiliary connection, and exports
+ *   the context itself as the connection's exportedObject.
+ *
+ *   ProbeExtensionController (principal class) receives
+ *   beginRequestWithExtensionContext: as a lifecycle callback only — it must
+ *   NOT set interfaces, export objects, or call resume; the framework has
+ *   already done all of that by the time this method is called.
+ *
+ * Protocol (unchanged):
  *   HOST → [auxConn.remoteProxy probeWithReply:]
- *     Extension allocates recv port, starts recv thread, returns send right.
- *   HOST sends cross-task Mach message (MAKE_SEND PORT descriptors) to that port.
- *   recv_thread reads descriptors, reports pad1/portname values back via
+ *     ProbeVendorContext allocates a recv port, starts recv thread,
+ *     and returns a send right (NSMachPort) to the host.
+ *   HOST sends cross-task Mach message (PORT descriptors) to that port.
+ *   recv_thread reads descriptors, calls back via
  *   [auxConn.remoteProxy reportDescCount:pad1s:portNames:error:].
  */
 
@@ -31,47 +39,6 @@
                   pad1s:(NSArray<NSNumber *> *)pad1Values
               portNames:(NSArray<NSNumber *> *)portNames
                   error:(NSString *)error;
-@end
-
-/* ── NSExtensionContext category: auxiliary connection protocol config ─ */
-/*
- * The framework calls +_extensionAuxiliaryVendorProtocol to determine what
- * the extension exports (Probe65371Protocol), and +_extensionAuxiliaryHostProtocol
- * to determine what the host exports back (ProbeResultProtocol).  Both methods
- * are private and undocumented; we add them via category so the framework finds
- * them when it looks on NSExtensionContext.
- *
- * Some iOS versions may look for these on the principal class instead — we
- * also declare them there as a fallback.
- */
-@interface NSExtensionContext (Probe65371Aux)
-+ (NSXPCInterface *)_extensionAuxiliaryVendorProtocol;
-+ (NSXPCInterface *)_extensionAuxiliaryHostProtocol;
-@end
-
-@implementation NSExtensionContext (Probe65371Aux)
-
-+ (NSXPCInterface *)_extensionAuxiliaryVendorProtocol
-{
-    NSXPCInterface *iface = [NSXPCInterface interfaceWithProtocol:@protocol(Probe65371Protocol)];
-    [iface setClasses:[NSSet setWithObject:[NSMachPort class]]
-          forSelector:@selector(probeWithReply:)
-        argumentIndex:0 ofReply:YES];
-    return iface;
-}
-
-+ (NSXPCInterface *)_extensionAuxiliaryHostProtocol
-{
-    NSXPCInterface *iface = [NSXPCInterface interfaceWithProtocol:@protocol(ProbeResultProtocol)];
-    [iface setClasses:[NSSet setWithObjects:[NSArray class], [NSNumber class], nil]
-          forSelector:@selector(reportDescCount:pad1s:portNames:error:)
-        argumentIndex:1 ofReply:NO];
-    [iface setClasses:[NSSet setWithObjects:[NSArray class], [NSNumber class], nil]
-          forSelector:@selector(reportDescCount:pad1s:portNames:error:)
-        argumentIndex:2 ofReply:NO];
-    return iface;
-}
-
 @end
 
 /* ── Receive-thread context ─────────────────────────────────────────── */
@@ -132,18 +99,48 @@ static void *recv_thread(void *arg)
     return NULL;
 }
 
-/* ── Service implementation (exported on the auxiliary connection) ───── */
-
-@interface ProbeServiceImpl : NSObject <Probe65371Protocol>
-@property (weak) NSXPCConnection *connection;
+/* ── ProbeVendorContext — NSExtensionContext subclass ───────────────── */
+/*
+ * Named in Info.plist via NSExtensionContextClass.  The framework:
+ *   1. Instantiates this class as the request's NSExtensionContext.
+ *   2. Calls +_extensionAuxiliaryVendorProtocol / +_extensionAuxiliaryHostProtocol
+ *      on it to configure both sides of the auxiliary XPC connection.
+ *   3. Exports this instance as auxConn.exportedObject on the extension side.
+ *   4. Resumes the connection.
+ *
+ * We implement Probe65371Protocol here so calls from the host dispatch to us.
+ */
+@interface ProbeVendorContext : NSExtensionContext <Probe65371Protocol>
 @end
 
-@implementation ProbeServiceImpl
+@implementation ProbeVendorContext
+
++ (NSXPCInterface *)_extensionAuxiliaryVendorProtocol
+{
+    NSXPCInterface *iface = [NSXPCInterface interfaceWithProtocol:@protocol(Probe65371Protocol)];
+    [iface setClasses:[NSSet setWithObject:[NSMachPort class]]
+          forSelector:@selector(probeWithReply:)
+        argumentIndex:0 ofReply:YES];
+    return iface;
+}
+
++ (NSXPCInterface *)_extensionAuxiliaryHostProtocol
+{
+    NSXPCInterface *iface = [NSXPCInterface interfaceWithProtocol:@protocol(ProbeResultProtocol)];
+    [iface setClasses:[NSSet setWithObjects:[NSArray class], [NSNumber class], nil]
+          forSelector:@selector(reportDescCount:pad1s:portNames:error:)
+        argumentIndex:1 ofReply:NO];
+    [iface setClasses:[NSSet setWithObjects:[NSArray class], [NSNumber class], nil]
+          forSelector:@selector(reportDescCount:pad1s:portNames:error:)
+        argumentIndex:2 ofReply:NO];
+    return iface;
+}
 
 - (void)probeWithReply:(void(^)(NSMachPort *))reply
 {
-    mach_port_t recv = MACH_PORT_NULL;
+    NSLog(@"[Probe65371] probeWithReply: called on ProbeVendorContext");
 
+    mach_port_t recv = MACH_PORT_NULL;
     if (mach_port_allocate(mach_task_self(),
                            MACH_PORT_RIGHT_RECEIVE, &recv) != KERN_SUCCESS) {
         NSLog(@"[Probe65371] mach_port_allocate failed");
@@ -156,9 +153,17 @@ static void *recv_thread(void *arg)
         reply(nil); return;
     }
 
+    /* Get the auxiliary connection from self (we ARE the NSExtensionContext). */
+    NSXPCConnection *auxConn = nil;
+    @try { auxConn = [self valueForKey:@"_auxiliaryConnection"]; }
+    @catch (NSException *e) {
+        NSLog(@"[Probe65371] _auxiliaryConnection on self threw: %@", e);
+    }
+    NSLog(@"[Probe65371] auxConn from self: %@", auxConn ?: @"<nil>");
+
     recv_ctx_t *ctx = malloc(sizeof(recv_ctx_t));
     ctx->recv     = recv;
-    ctx->conn_ref = (__bridge_retained void *)self.connection;
+    ctx->conn_ref = (__bridge_retained void *)auxConn;
 
     pthread_attr_t attr;
     pthread_attr_init(&attr);
@@ -169,7 +174,7 @@ static void *recv_thread(void *arg)
 
     NSLog(@"[Probe65371] recv thread started for port %u", recv);
 
-    /* NSMachPortDeallocateNone: do not deallocate on release — recv_thread owns it. */
+    /* NSMachPortDeallocateNone: recv_thread owns the recv right. */
     NSMachPort *port = [[NSMachPort alloc]
                             initWithMachPort:recv
                                      options:NSMachPortDeallocateNone];
@@ -179,105 +184,39 @@ static void *recv_thread(void *arg)
 @end
 
 /* ── Principal class ────────────────────────────────────────────────── */
-
+/*
+ * NSExtensionRequestHandling entry point.  By the time this is called,
+ * the framework has already set up, configured, and resumed the auxiliary
+ * connection on 'context' (a ProbeVendorContext instance).  We must NOT
+ * touch interfaces, exportedObject, or call resume — only log state for
+ * debugging, and do NOT call completeRequest.
+ */
 @interface ProbeExtensionController : NSObject <NSExtensionRequestHandling>
 @end
 
 @implementation ProbeExtensionController
 
-/*
- * Fallback in case the framework calls these on the principal class
- * rather than on NSExtensionContext.
- */
-+ (NSXPCInterface *)_extensionAuxiliaryVendorProtocol
-{
-    return [NSExtensionContext _extensionAuxiliaryVendorProtocol];
-}
-+ (NSXPCInterface *)_extensionAuxiliaryHostProtocol
-{
-    return [NSExtensionContext _extensionAuxiliaryHostProtocol];
-}
-
 - (void)beginRequestWithExtensionContext:(NSExtensionContext *)context
 {
-    NSLog(@"[Probe65371] beginRequestWithExtensionContext — iOS %@",
-          [NSProcessInfo processInfo].operatingSystemVersionString);
+    NSLog(@"[Probe65371] beginRequestWithExtensionContext: iOS %@, context class: %@",
+          [NSProcessInfo processInfo].operatingSystemVersionString,
+          NSStringFromClass([context class]));
 
-    /*
-     * The framework should have already set up the auxiliary connection.
-     * Try two KVC paths; both are private — log which one succeeds.
-     */
+    /* Diagnostic: log what the framework set up on the connection. */
     NSXPCConnection *auxConn = nil;
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    @try {
-        auxConn = [context performSelector:NSSelectorFromString(@"_auxiliaryConnection")];
-    } @catch (NSException *e) {
-        NSLog(@"[Probe65371] performSelector _auxiliaryConnection threw: %@", e);
+    @try { auxConn = [context valueForKey:@"_auxiliaryConnection"]; }
+    @catch (NSException *e) {
+        NSLog(@"[Probe65371] diag: _auxiliaryConnection threw: %@", e);
     }
-#pragma clang diagnostic pop
-
-    if (!auxConn) {
-        @try {
-            auxConn = [context valueForKey:@"_auxiliaryConnection"];
-        } @catch (NSException *e) {
-            NSLog(@"[Probe65371] valueForKey _auxiliaryConnection threw: %@", e);
-        }
-    }
-
-    NSLog(@"[Probe65371] auxiliary connection: %@", auxConn ?: @"<nil — fatal>");
-
-    if (!auxConn) {
-        NSLog(@"[Probe65371] FATAL: no auxiliary connection. "
-              @"The framework did not set up _auxiliaryConnection. "
-              @"Private API may have changed on this iOS version.");
-        return;
-    }
+    NSLog(@"[Probe65371] diag: auxConn=%@ exportedObject=%@ exportedInterface=%@",
+          auxConn ?: @"<nil>",
+          auxConn.exportedObject ?: @"<nil>",
+          auxConn.exportedInterface ?: @"<nil>");
 
     /*
-     * Explicitly configure interfaces as a safety net in case the framework
-     * did not apply _extensionAuxiliaryVendorProtocol / _extensionAuxiliaryHostProtocol.
-     * If the framework already set them, setting again is harmless (same object).
-     */
-    @try {
-        NSXPCInterface *svcIface =
-            [NSXPCInterface interfaceWithProtocol:@protocol(Probe65371Protocol)];
-        [svcIface setClasses:[NSSet setWithObject:[NSMachPort class]]
-                 forSelector:@selector(probeWithReply:)
-               argumentIndex:0 ofReply:YES];
-        auxConn.exportedInterface = svcIface;
-
-        NSXPCInterface *resultIface =
-            [NSXPCInterface interfaceWithProtocol:@protocol(ProbeResultProtocol)];
-        [resultIface setClasses:[NSSet setWithObjects:[NSArray class],
-                                                      [NSNumber class], nil]
-                   forSelector:@selector(reportDescCount:pad1s:portNames:error:)
-                 argumentIndex:1 ofReply:NO];
-        [resultIface setClasses:[NSSet setWithObjects:[NSArray class],
-                                                      [NSNumber class], nil]
-                   forSelector:@selector(reportDescCount:pad1s:portNames:error:)
-                 argumentIndex:2 ofReply:NO];
-        auxConn.remoteObjectInterface = resultIface;
-    } @catch (NSException *e) {
-        NSLog(@"[Probe65371] interface config exception (may be pre-set by framework): %@", e);
-    }
-
-    ProbeServiceImpl *impl = [ProbeServiceImpl new];
-    impl.connection = auxConn;
-    auxConn.exportedObject = impl;
-
-    /* Resume in case the framework has not done so yet. */
-    @try { [auxConn resume]; } @catch (NSException *e) {
-        NSLog(@"[Probe65371] resume exception (may already be active): %@", e);
-    }
-
-    NSLog(@"[Probe65371] probe service live on auxiliary connection");
-
-    /*
-     * Do NOT call [context completeRequest...].
-     * Leaving the request open keeps the extension process alive until the host
-     * cancels it or the system kills it.
+     * Framework owns the connection — do not modify or resume.
+     * Do NOT call [context completeRequest:...]; leaving it open
+     * keeps the extension alive.
      */
 }
 

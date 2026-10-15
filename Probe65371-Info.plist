@@ -22,6 +22,13 @@
     <dict>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.services</string>
+        <key>NSExtensionContextClass</key>
+        <string>ProbeVendorContext</string>
+        <key>NSExtensionAttributes</key>
+        <dict>
+            <key>NSExtensionActivationRule</key>
+            <string>TRUEPREDICATE</string>
+        </dict>
     </dict>
 </dict>
 </plist>
