@@ -16,6 +16,7 @@
 #include <mach/mach.h>
 #include <pthread.h>
 #include <string.h>
+#include <dlfcn.h>
 
 /* ── Protocols (must match ProbeXPC.m exactly) ─────────────────────── */
 
@@ -196,17 +197,30 @@ shouldAcceptNewConnection:(NSXPCConnection *)conn
 int main(void)
 {
     @autoreleasepool {
+        NSLog(@"[Probe65371] service main() starting — iOS %@",
+              [NSProcessInfo processInfo].operatingSystemVersionString);
+
         /*
          * NSXPCListener +serviceListener is marked API_UNAVAILABLE(ios) in the
          * SDK header.  Use performSelector: so Clang never sees a static
          * reference to the unavailable API.  The method IS present in
-         * Foundation at runtime for embedded XPC services.
+         * Foundation at runtime for embedded XPC services on iOS.
          */
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         NSXPCListener *listener = (NSXPCListener *)
             [NSXPCListener performSelector:NSSelectorFromString(@"serviceListener")];
 #pragma clang diagnostic pop
+
+        if (!listener) {
+            NSLog(@"[Probe65371] FATAL: NSXPCListener serviceListener returned nil — "
+                  @"XPC service launch not supported by this iOS version/configuration. "
+                  @"xpc_main present: %s",
+                  dlsym(RTLD_DEFAULT, "xpc_main") ? "YES" : "NO");
+            return 1;
+        }
+
+        NSLog(@"[Probe65371] serviceListener OK — setting delegate and resuming");
         listener.delegate = [ServiceDelegate new];
         [listener resume];
         [[NSRunLoop mainRunLoop] run];
