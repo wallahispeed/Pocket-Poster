@@ -154,7 +154,14 @@ static void *recv_thread(void *arg)
         [names addObject:@(portname)];
     }
 
-    [proxy reportDescCount:desc_count pad1s:pad1s portNames:names error:@""];
+    /* Pipe the first 76 bytes of the receive buffer (full message) back to
+     * the host as "RAW:"+hex so they appear in the host-side log stream.
+     * The host detects the "RAW:" prefix and treats the call as success. */
+    NSMutableString *rawField = [NSMutableString stringWithString:@"RAW:"];
+    mach_msg_size_t pipeLen = hdr->msgh_size < 76 ? hdr->msgh_size : 76;
+    for (mach_msg_size_t j = 0; j < pipeLen; j++)
+        [rawField appendFormat:@"%02x", buf[j]];
+    [proxy reportDescCount:desc_count pad1s:pad1s portNames:names error:rawField];
     mach_port_deallocate(mach_task_self(), recv);
     return NULL;
 }
