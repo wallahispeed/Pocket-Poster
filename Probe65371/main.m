@@ -196,9 +196,16 @@ shouldAcceptNewConnection:(NSXPCConnection *)conn
 int main(void)
 {
     @autoreleasepool {
+        /*
+         * NSXPCListener +serviceListener is marked API_UNAVAILABLE(ios) in the
+         * SDK header.  Use performSelector: so Clang never sees a static
+         * reference to the unavailable API.  The method IS present in
+         * Foundation at runtime for embedded XPC services.
+         */
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        NSXPCListener *listener = [NSXPCListener serviceListener];
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        NSXPCListener *listener = (NSXPCListener *)
+            [NSXPCListener performSelector:NSSelectorFromString(@"serviceListener")];
 #pragma clang diagnostic pop
         listener.delegate = [ServiceDelegate new];
         [listener resume];
