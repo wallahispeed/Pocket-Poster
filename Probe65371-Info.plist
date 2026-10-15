@@ -24,6 +24,8 @@
         <string>ProbeExtensionController</string>
         <key>NSExtensionContextClass</key>
         <string>ProbeVendorContext</string>
+        <key>NSExtensionContextHostClass</key>
+        <string>ProbeHostContext</string>
         <key>NSExtensionAttributes</key>
         <dict>
             <key>NSExtensionActivationRule</key>
