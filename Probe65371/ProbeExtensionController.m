@@ -1,39 +1,79 @@
 /*
- * ProbeExtensionController.m — Probe65371 extension (v3.2.73).
+ * ProbeExtensionController.m — Probe65371 extension (v3.2.74).
  *
- * Architecture:
- *   Info.plist: NSExtensionContextClass = ProbeVendorContext
- *               NSExtensionContextHostClass = ProbeHostContext (defined in ProbeXPC.m)
- *
- *   Framework:
- *     1. Creates ProbeVendorContext as the extension-side NSExtensionContext.
- *     2. Calls +_extensionAuxiliaryVendorProtocol / +_extensionAuxiliaryHostProtocol
- *        on it and checks conformsToProtocol: for BOTH protocols.
- *     3. Creates ProbeHostContext (NSExtensionContextHostClass) on the host side.
- *     4. Sets up and resumes the auxiliary XPC connection with:
- *          extension exports: ProbeVendorContext (Probe65371Protocol)
- *          host exports:      ProbeHostContext   (ProbeResultProtocol)
- *
- *   ProbeExtensionController.beginRequestWithExtensionContext: is a lifecycle
- *   callback only — must NOT touch interfaces, exportedObject, or call resume.
- *
- * Protocol:
- *   HOST → [proxy probeWithReply:]
- *     ProbeVendorContext allocates recv port, starts recv thread, returns send right.
- *   HOST sends cross-task Mach message (PORT descriptors) to that port.
- *   recv_thread reads descriptors, calls:
- *     [proxy reportDescCount:pad1s:portNames:error:] → ProbeHostContext on host side.
+ * NSMachPort cannot survive NSXPCConnection serialization (the Mach right is
+ * stripped in transit and the receiver gets nil).  Fix: wrap the send right
+ * in an xpc_mach_send_t object and declare the reply argument with
+ * -[NSXPCInterface setXPCType:forSelector:argumentIndex:ofReply:] so the XPC
+ * transport layer transfers the actual kernel right instead of NSCoding it.
+ * Private libxpc functions are resolved via dlsym at runtime.
  */
 
 #import <Foundation/Foundation.h>
+#import <dlfcn.h>
 #include <mach/mach.h>
 #include <pthread.h>
 #include <string.h>
 
+/* ── Private libxpc Mach-send helpers (resolved via dlsym) ─────────── */
+
+typedef void *xpc_obj_t;  /* alias to avoid conflict with system xpc.h types */
+
+typedef xpc_obj_t (*fn_xpc_mach_send_create_t)(mach_port_t port);
+typedef mach_port_t (*fn_xpc_mach_send_get_right_t)(xpc_obj_t obj);
+
+static fn_xpc_mach_send_create_t    _fn_create    = NULL;
+static fn_xpc_mach_send_get_right_t _fn_get_right = NULL;
+static const void                  *_xpc_type_ms  = NULL;  /* XPC_TYPE_MACH_SEND */
+
+static void load_xpc_mach_fns(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        _fn_create = dlsym(RTLD_DEFAULT, "xpc_mach_send_create");
+        /* Try both known names for the "get right" extractor. */
+        _fn_get_right = dlsym(RTLD_DEFAULT, "xpc_mach_send_get_right");
+        if (!_fn_get_right)
+            _fn_get_right = dlsym(RTLD_DEFAULT, "xpc_mach_send_copy_right");
+        /* _xpc_type_mach_send is the type-tag used with setXPCType:. */
+        _xpc_type_ms = dlsym(RTLD_DEFAULT, "_xpc_type_mach_send");
+        NSLog(@"[Probe65371] libxpc: create=%p get_right=%p type_ms=%p",
+              _fn_create, _fn_get_right, _xpc_type_ms);
+    });
+}
+
+/* Register that reply argument 0 of probeWithReply: is a Mach-send XPC type. */
+static void set_xpc_mach_send_type(NSXPCInterface *iface) {
+    load_xpc_mach_fns();
+    if (!_xpc_type_ms) {
+        NSLog(@"[Probe65371] WARNING: _xpc_type_mach_send not found — Mach right may be nil at host");
+        return;
+    }
+    SEL sel = NSSelectorFromString(@"setXPCType:forSelector:argumentIndex:ofReply:");
+    if (![iface respondsToSelector:sel]) {
+        NSLog(@"[Probe65371] WARNING: NSXPCInterface !respondsTo setXPCType:");
+        return;
+    }
+    NSMethodSignature *sig = [iface methodSignatureForSelector:sel];
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target   = iface;
+    inv.selector = sel;
+    const void *type    = _xpc_type_ms;
+    SEL         proxySel = @selector(probeWithReply:);
+    NSUInteger  argIdx  = 0;
+    BOOL        reply   = YES;
+    [inv setArgument:&type     atIndex:2];
+    [inv setArgument:&proxySel atIndex:3];
+    [inv setArgument:&argIdx   atIndex:4];
+    [inv setArgument:&reply    atIndex:5];
+    [inv invoke];
+    NSLog(@"[Probe65371] setXPCType:MACH_SEND registered for probeWithReply: reply[0]");
+}
+
 /* ── Shared protocols (must match ProbeXPC.m exactly) ───────────────── */
 
 @protocol Probe65371Protocol <NSObject>
-- (void)probeWithReply:(void(^)(NSMachPort *))reply;
+/* Reply carries an xpc_mach_send_t (wrapped as id); registered via setXPCType. */
+- (void)probeWithReply:(void(^)(id xpcPort))reply;
 @end
 
 @protocol ProbeResultProtocol <NSObject>
@@ -46,7 +86,7 @@
 /* ── Receive-thread context ─────────────────────────────────────────── */
 
 typedef struct {
-    void        *conn_ref;  /* __bridge_retained NSXPCConnection*; released in thread */
+    void        *conn_ref;  /* __bridge_retained NSXPCConnection* */
     mach_port_t  recv;
 } recv_ctx_t;
 
@@ -66,7 +106,7 @@ static void *recv_thread(void *arg)
                                 0, (mach_msg_size_t)sizeof(buf),
                                 recv, 12000, MACH_PORT_NULL);
 
-    NSLog(@"[Probe65371] recv_thread: mach_msg returned kr=0x%x", (unsigned)kr);
+    NSLog(@"[Probe65371] recv_thread: mach_msg kr=0x%x", (unsigned)kr);
 
     id<ProbeResultProtocol> proxy = [conn remoteObjectProxy];
 
@@ -101,16 +141,8 @@ static void *recv_thread(void *arg)
     return NULL;
 }
 
-/* ── ProbeVendorContext — extension-side NSExtensionContext subclass ─── */
-/*
- * Formally adopts BOTH protocols so conformsToProtocol: returns YES for each.
- * The framework checks this before setting up the auxiliary connection:
- *   [self.extensionContext conformsToProtocol:auxHostProtocol.protocol]
- * Without the formal declaration, the check fails even if methods are implemented.
- *
- * reportDescCount:... is adopted to satisfy ProbeResultProtocol conformance;
- * the extension never receives this call (the host side does) — stub is fine.
- */
+/* ── ProbeVendorContext ──────────────────────────────────────────────── */
+
 @interface ProbeVendorContext : NSExtensionContext <Probe65371Protocol, ProbeResultProtocol>
 @end
 
@@ -118,10 +150,9 @@ static void *recv_thread(void *arg)
 
 + (NSXPCInterface *)_extensionAuxiliaryVendorProtocol
 {
+    load_xpc_mach_fns();
     NSXPCInterface *iface = [NSXPCInterface interfaceWithProtocol:@protocol(Probe65371Protocol)];
-    [iface setClasses:[NSSet setWithObject:[NSMachPort class]]
-          forSelector:@selector(probeWithReply:)
-        argumentIndex:0 ofReply:YES];
+    set_xpc_mach_send_type(iface);
     return iface;
 }
 
@@ -137,16 +168,15 @@ static void *recv_thread(void *arg)
     return iface;
 }
 
-/* Vendor protocol — HOST calls this on the extension proxy. */
-- (void)probeWithReply:(void(^)(NSMachPort *))reply
+- (void)probeWithReply:(void(^)(id))reply
 {
-    NSLog(@"[Probe65371] probeWithReply: called — conforms Probe65371Protocol=%d ProbeResultProtocol=%d",
+    load_xpc_mach_fns();
+    NSLog(@"[Probe65371] probeWithReply: called — conforms vendor=%d host=%d",
           [self conformsToProtocol:@protocol(Probe65371Protocol)],
           [self conformsToProtocol:@protocol(ProbeResultProtocol)]);
 
     mach_port_t recv = MACH_PORT_NULL;
-    if (mach_port_allocate(mach_task_self(),
-                           MACH_PORT_RIGHT_RECEIVE, &recv) != KERN_SUCCESS) {
+    if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &recv) != KERN_SUCCESS) {
         NSLog(@"[Probe65371] mach_port_allocate failed");
         reply(nil); return;
     }
@@ -160,7 +190,7 @@ static void *recv_thread(void *arg)
     NSXPCConnection *auxConn = nil;
     @try { auxConn = [self valueForKey:@"_auxiliaryConnection"]; }
     @catch (NSException *e) {
-        NSLog(@"[Probe65371] _auxiliaryConnection on self threw: %@", e);
+        NSLog(@"[Probe65371] _auxiliaryConnection threw: %@", e);
     }
     NSLog(@"[Probe65371] auxConn from self: %@", auxConn ?: @"<nil>");
 
@@ -177,13 +207,21 @@ static void *recv_thread(void *arg)
 
     NSLog(@"[Probe65371] recv thread started for port %u", recv);
 
-    NSMachPort *port = [[NSMachPort alloc]
-                            initWithMachPort:recv
-                                     options:NSMachPortDeallocateNone];
-    reply(port);
+    /* Wrap the send right as an xpc_mach_send_t so NSXPCConnection transfers
+     * the actual kernel right.  xpc_mach_send_create() consumes the reference;
+     * do NOT also deallocate recv (which holds both recv + send rights). */
+    id xpcPort = nil;
+    if (_fn_create) {
+        xpc_obj_t raw = _fn_create(recv);
+        xpcPort = (__bridge_transfer id)raw;
+        NSLog(@"[Probe65371] xpc_mach_send wrapped port %u → %@", recv, xpcPort);
+    } else {
+        NSLog(@"[Probe65371] WARNING: xpc_mach_send_create unavailable — reply will be nil");
+    }
+    reply(xpcPort);
 }
 
-/* Host protocol stub — extension never receives this; adopted for conformsToProtocol: */
+/* Stub — extension never receives this (host side gets it) */
 - (void)reportDescCount:(uint32_t)count
                   pad1s:(NSArray<NSNumber *> *)pad1s
               portNames:(NSArray<NSNumber *> *)portNames
@@ -206,7 +244,6 @@ static void *recv_thread(void *arg)
     NSLog(@"[Probe65371] beginRequestWithExtensionContext: iOS %@  contextClass=%@",
           [NSProcessInfo processInfo].operatingSystemVersionString,
           NSStringFromClass([context class]));
-
     NSLog(@"[Probe65371] conformsToProtocol: vendor=%d host=%d",
           [context conformsToProtocol:@protocol(Probe65371Protocol)],
           [context conformsToProtocol:@protocol(ProbeResultProtocol)]);
