@@ -47,6 +47,16 @@ for APPEX in "$TARGET_APP/PlugIns/"*.appex; do
     rm -rf "$APPEX/embedded.mobileprovision"
 done
 
+# Ad-hoc sign Probe65371.appex so Sideloadly sees CS_EXECSEG_MAIN_BINARY in the
+# existing signature when it re-signs with the developer certificate. Without this,
+# Sideloadly creates a fresh signature that omits CS_EXECSEG_MAIN_BINARY for
+# extension binaries, causing AMFI to kill the extension on launch (iOS 26).
+PROBE_APPEX="$TARGET_APP/PlugIns/Probe65371.appex"
+if [ -d "$PROBE_APPEX" ]; then
+    codesign --sign - --force "$PROBE_APPEX"
+    echo "Ad-hoc signed Probe65371.appex (CS_EXECSEG_MAIN_BINARY preserved for Sideloadly)"
+fi
+
 mkdir Payload
 cp -r "${APPLICATION_NAME}.app" "Payload/${APPLICATION_NAME}.app"
 strip "Payload/${APPLICATION_NAME}.app/${APPLICATION_NAME}"
